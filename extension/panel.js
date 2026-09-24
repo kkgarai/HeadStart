@@ -504,6 +504,11 @@ async function startDxGoogleAuth() {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not start the Google sign-in");
+    if (body.already) {
+      setTokenMsg("Google is already connected.");
+      setTimeout(loadMcps, 400);
+      return;
+    }
     setTokenMsg("Finish the Google sign-in in the browser, then this list refreshes.");
     setTimeout(loadMcps, 8000);
   } catch (err) {

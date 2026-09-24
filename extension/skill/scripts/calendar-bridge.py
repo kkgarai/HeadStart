@@ -1242,7 +1242,12 @@ def find_mcp_adaptor_bin() -> str:
 
 
 def dx_google_connected() -> bool:
-    return dx_provider_connected("google-workspace-rw")
+    """True when this bridge already has a Google session.
+
+    Do not run `mcp-adaptor auth` here. That command starts a browser login,
+    including when the flag is `--validate`.
+    """
+    return bool(_GOOGLE_DX_OK or _dx_session_ready())
 
 
 def dx_provider_connected(provider: str) -> bool:
@@ -1285,8 +1290,34 @@ def start_dx_provider_auth(provider: str, log_name: str) -> None:
         )
 
 
-def start_dx_google_auth() -> None:
+def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
+    global _GOOGLE_DX_OK
+    try:
+        code = proc.wait(timeout=900)
+    except Exception:
+        return
+    if code == 0:
+        _GOOGLE_DX_OK = True
+
+
+def start_dx_google_auth(*, user_clicked: bool = False) -> None:
+    """Open one Google window only when the user clicked Sign in.
+
+    Calendar, Gmail, Assembled, and page load must not call this. A fetch that
+    cannot see Google fails closed instead of opening another login.
+    """
+    if not user_clicked:
+        return
+    if _GOOGLE_DX_OK or _dx_session_ready():
+        return
+    with _DX_AUTH_LOCK:
+        running = _DX_AUTH_PROCS.get("google-workspace-rw")
+        if running is not None and running.poll() is None:
+            return
     start_dx_provider_auth("google-workspace-rw", ".dx-google-auth.log")
+    proc = _DX_AUTH_PROCS.get("google-workspace-rw")
+    if proc is not None and proc.poll() is None:
+        threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
 
 
 def start_dx_gus_auth() -> None:
@@ -1325,6 +1356,9 @@ _DX_SERVER = ""
 _DX_SERVER_SKIP: set[str] = set()
 _GOOGLE_FALLBACK_FAILED = False
 _GOOGLE_HTTP_DEAD = False
+_GOOGLE_DX_OK = False
+_GOOGLE_HTTP_LOCK = threading.Lock()
+_GOOGLE_HTTP_BOX: dict[str, str] = {"url": "", "session": "", "ready": ""}
 _DX_BUF = bytearray()
 _DX_TOOLS: dict[str, str] = {}
 _DX_SEQ = 10
@@ -1481,15 +1515,9 @@ def _dx_rpc_locked(proc: subprocess.Popen, method: str, params: dict, timeout: f
 
 
 def _dx_server_names() -> tuple[str, ...]:
-    # Same provider the sign-in button uses. Other names each open another login.
-    if _DX_SERVER == "google-workspace-rw" and "google-workspace-rw" not in _DX_SERVER_SKIP:
-        return ("google-workspace-rw",)
+    # One provider. google-workspace and google_workspace each open another login.
     if "google-workspace-rw" in _DX_SERVER_SKIP:
-        return tuple(
-            name
-            for name in ("google-workspace", "google_workspace")
-            if name not in _DX_SERVER_SKIP
-        )
+        return ()
     return ("google-workspace-rw",)
 
 
@@ -1888,32 +1916,41 @@ def mcp_tools_text(parsed: dict) -> str:
     return text or ""
 
 
-def mcp_tools_call(url: str, headers: dict, name: str, arguments: dict, timeout: float = 30) -> str:
+def mcp_tools_call(
+    url: str,
+    headers: dict,
+    name: str,
+    arguments: dict,
+    timeout: float = 30,
+    session: str | None = None,
+    reuse: bool = False,
+) -> str:
     ctx = ssl_ctx() if str(url).lower().startswith("https://") else None
 
-    def post(payload, session=None):
+    def post(payload, session_id=None):
         h = dict(headers)
-        if session:
-            h["Mcp-Session-Id"] = session
+        if session_id:
+            h["Mcp-Session-Id"] = session_id
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"), method="POST", headers=h
         )
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return resp.status, resp.headers.get("Mcp-Session-Id"), resp.read()
 
-    _, session, _ = post(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "engineer-day-planner", "version": "1"},
-            },
-        }
-    )
-    post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
+    if not reuse:
+        _, session, _ = post(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "engineer-day-planner", "version": "1"},
+                },
+            }
+        )
+        post({"jsonrpc": "2.0", "method": "notifications/initialized"}, session)
     st, _, body = post(
         {
             "jsonrpc": "2.0",
@@ -1931,7 +1968,7 @@ def mcp_tools_call(url: str, headers: dict, name: str, arguments: dict, timeout:
 
 
 def reset_google_fallback() -> None:
-    """One Gmail/Calendar sign-in attempt per Run Planner, not one per fetch."""
+    """Let the next run try Google Workspace again. Never opens a login."""
     global _GOOGLE_FALLBACK_FAILED, _GOOGLE_HTTP_DEAD, _DX_SERVER
     _GOOGLE_FALLBACK_FAILED = False
     _GOOGLE_HTTP_DEAD = False
@@ -1944,43 +1981,148 @@ def _dx_session_ready() -> bool:
     return bool(proc and proc.poll() is None and _DX_TOOLS)
 
 
-def mcp_call(name: str, arguments: dict) -> str:
-    """Gmail and Calendar. A 404 on the local HTTP server is not a failed login.
+def _google_http_target() -> tuple[str, dict] | None:
+    """Same Google server the Connected badge pings. Not a second login."""
+    cfg = aisuite_server_cfg("google-workspace")
+    if not isinstance(cfg, dict):
+        try:
+            cfg = pick_mcp_server(
+                discover_mcp_servers(),
+                ("google-workspace", "google_workspace"),
+            )
+        except Exception:
+            cfg = None
+    if not isinstance(cfg, dict):
+        return None
+    url = str(cfg.get("url") or "").strip()
+    headers = _mcp_headers(cfg)
+    auth = str(headers.get("Authorization") or headers.get("authorization") or "").strip()
+    if not url or not auth:
+        return None
+    return url, headers
 
-    After that 404, use the Google sign-in session. Signing in does not make the
-    dead address start working, so later calls in the same run must not go back to it.
-    """
-    global _GOOGLE_HTTP_DEAD
-    if _dx_session_ready() and _GOOGLE_HTTP_DEAD:
-        return dx_google_tools_call(name, arguments)
-    primary = None
-    if not _GOOGLE_HTTP_DEAD:
-        try:
-            url, auth = load_mcp()
-            headers = {
-                "Authorization": auth,
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            }
-            return mcp_tools_call(url, headers, name, arguments)
-        except Exception as exc:
-            primary = exc
-            text = str(exc)
-            if "404" in text or "Not Found" in text:
-                _GOOGLE_HTTP_DEAD = True
-    if not dx_provider_connected("google-workspace-rw"):
-        try:
-            start_dx_google_auth()
-        except Exception as exc:
-            if primary is not None and not _GOOGLE_HTTP_DEAD:
-                raise primary
-            raise RuntimeError(str(exc) or "Could not open the Google sign-in") from exc
-        raise RuntimeError("Google sign-in is open. Finish it, then run the planner again.")
+
+def _google_http_init(url: str, headers: dict, timeout: float) -> str:
+    ctx = ssl_ctx() if url.lower().startswith("https://") else None
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "engineer-day-planner", "version": "1"},
+        },
+    }
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode("utf-8"), method="POST", headers=dict(headers)
+    )
+    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        session = str(resp.headers.get("Mcp-Session-Id") or "")
+        raw = resp.read()
+        code = int(getattr(resp, "status", 200) or 200)
+    if code >= 400:
+        raise RuntimeError(f"HTTP {code}")
+    parsed = mcp_decode_http_json(raw)
+    if isinstance(parsed, dict) and parsed.get("error"):
+        err = parsed.get("error")
+        msg = err.get("message") if isinstance(err, dict) else str(err)
+        raise RuntimeError(msg or "Google MCP initialize failed")
+    note = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    noted = dict(headers)
+    if session:
+        noted["Mcp-Session-Id"] = session
+    req2 = urllib.request.Request(
+        url, data=json.dumps(note).encode("utf-8"), method="POST", headers=noted
+    )
     try:
+        with urllib.request.urlopen(req2, timeout=timeout, context=ctx):
+            pass
+    except Exception:
+        pass
+    return session
+
+
+def _google_session_lost(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "404" in text or "not found" in text or "session" in text
+
+
+def _google_mark_dead(exc: Exception) -> None:
+    """One failed Google handshake per run. Later fetches must not open another."""
+    global _GOOGLE_HTTP_DEAD
+    del exc
+    _GOOGLE_HTTP_DEAD = True
+
+
+def google_workspace_call(name: str, arguments: dict, timeout: float = 30) -> str:
+    """One Google HTTP session for the whole bridge. Does not open a login."""
+    target = _google_http_target()
+    if not target:
+        raise RuntimeError("google-workspace MCP is not available locally")
+    url, headers = target
+    with _GOOGLE_HTTP_LOCK:
+        if _GOOGLE_HTTP_DEAD:
+            raise RuntimeError("Google Workspace is not reachable")
+        if _GOOGLE_HTTP_BOX.get("url") != url or _GOOGLE_HTTP_BOX.get("ready") != "1":
+            try:
+                _GOOGLE_HTTP_BOX["session"] = _google_http_init(url, headers, min(timeout, 20))
+                _GOOGLE_HTTP_BOX["url"] = url
+                _GOOGLE_HTTP_BOX["ready"] = "1"
+            except Exception as exc:
+                _GOOGLE_HTTP_BOX["session"] = ""
+                _GOOGLE_HTTP_BOX["url"] = ""
+                _GOOGLE_HTTP_BOX["ready"] = ""
+                _google_mark_dead(exc)
+                raise
+        session = str(_GOOGLE_HTTP_BOX.get("session") or "")
+        try:
+            return mcp_tools_call(url, headers, name, arguments, timeout, session=session, reuse=True)
+        except Exception as exc:
+            if not _google_session_lost(exc):
+                raise
+            _GOOGLE_HTTP_BOX["session"] = ""
+            _GOOGLE_HTTP_BOX["ready"] = ""
+            try:
+                _GOOGLE_HTTP_BOX["session"] = _google_http_init(url, headers, min(timeout, 20))
+                _GOOGLE_HTTP_BOX["url"] = url
+                _GOOGLE_HTTP_BOX["ready"] = "1"
+            except Exception as again:
+                _GOOGLE_HTTP_BOX["session"] = ""
+                _GOOGLE_HTTP_BOX["url"] = ""
+                _GOOGLE_HTTP_BOX["ready"] = ""
+                _google_mark_dead(again)
+                raise
+            return mcp_tools_call(
+                url,
+                headers,
+                name,
+                arguments,
+                timeout,
+                session=str(_GOOGLE_HTTP_BOX.get("session") or ""),
+                reuse=True,
+            )
+
+
+def mcp_call(name: str, arguments: dict) -> str:
+    """Gmail and Calendar through the session that is already signed in.
+
+    A fetch never opens a browser. Three calls in one run share one session.
+    Sign-in is only the panel button.
+    """
+    if _dx_session_ready():
         return dx_google_tools_call(name, arguments)
-    except Exception as exc:
-        detail = str(exc).strip() or "Google sign-in session could not load Gmail or Calendar"
-        raise RuntimeError(detail) from exc
+    try:
+        return google_workspace_call(name, arguments)
+    except Exception as primary:
+        if _GOOGLE_DX_OK or _dx_session_ready():
+            try:
+                return dx_google_tools_call(name, arguments)
+            except Exception as exc:
+                detail = str(exc).strip() or str(primary).strip() or "Google Workspace did not answer"
+                raise RuntimeError(detail) from exc
+        detail = str(primary).strip() or "Google Workspace did not answer"
+        raise RuntimeError(detail) from primary
 
 
 def mcp_http_ready(cfg: dict) -> bool:
@@ -12396,11 +12538,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "local only"})
                 return
             try:
-                start_dx_google_auth()
+                if _GOOGLE_DX_OK or _dx_session_ready():
+                    self._json(200, {"ok": True, "already": True, "started": False})
+                    return
+                running = _DX_AUTH_PROCS.get("google-workspace-rw")
+                if running is not None and running.poll() is None:
+                    self._json(200, {"ok": True, "already": True, "started": False})
+                    return
+                suite = aisuite_server_cfg("google-workspace")
+                if suite and ping_http_mcp(suite) == "connected":
+                    self._json(200, {"ok": True, "already": True, "started": False})
+                    return
+                start_dx_google_auth(user_clicked=True)
             except Exception as exc:
                 self._json(502, {"error": str(exc) or "could not start the Google sign-in"})
                 return
-            self._json(200, {"ok": True, "started": True})
+            self._json(200, {"ok": True, "started": True, "already": False})
             return
         if path == "/mcp/gus-auth":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
@@ -12568,6 +12721,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/calendar/replies":
+            # Page load must not start a Google handshake. A run or Refresh does.
+            if _GOOGLE_HTTP_BOX.get("ready") != "1" and not _dx_session_ready():
+                self._json(200, {"ok": True, "events": []})
+                return
             tz = str(body.get("timezone") or "").strip()
             try:
                 result = fetch_primary_events(
