@@ -473,7 +473,7 @@ async function startDxGusAuth() {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not start the GUS sign-in");
-    setTokenMsg("Finish the GUS sign-in in the browser, then this list refreshes.");
+    setTokenMsg(body.message || "Finish the GUS sign-in in the browser, then this list refreshes.");
     setTimeout(loadMcps, 8000);
   } catch (err) {
     setTokenMsg(err && err.message ? err.message : "Could not start the GUS sign-in");

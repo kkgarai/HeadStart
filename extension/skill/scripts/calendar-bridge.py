@@ -1235,6 +1235,100 @@ def enable_claude_google_plugin() -> None:
         return
 
 
+def _decode_chunked(body: bytes) -> bytes:
+    out = bytearray()
+    index = 0
+    while index < len(body):
+        line_end = body.find(b"\r\n", index)
+        if line_end < 0:
+            break
+        size_txt = body[index:line_end].split(b";", 1)[0].strip()
+        try:
+            size = int(size_txt or b"0", 16)
+        except ValueError:
+            break
+        index = line_end + 2
+        if size <= 0:
+            break
+        out += body[index : index + size]
+        index += size + 2
+    return bytes(out)
+
+
+def aisuite_manager_servers() -> dict[str, str]:
+    """Same server list the AI Suite app shows. status connected means that login is already done."""
+    sock_path = HOME / ".aisuite" / "manager.sock"
+    auth = aisuite_authorization()
+    if not auth or not sock_path.exists():
+        return {}
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(4)
+        sock.connect(str(sock_path))
+        req = (
+            "GET /api/mcp/servers HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Connection: close\r\n"
+            "Authorization: %s\r\n"
+            "Accept: application/json\r\n\r\n" % auth
+        )
+        sock.sendall(req.encode("utf-8"))
+        chunks: list[bytes] = []
+        while True:
+            part = sock.recv(65536)
+            if not part:
+                break
+            chunks.append(part)
+        sock.close()
+    except Exception:
+        return {}
+    raw = b"".join(chunks)
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status_line = head.split(b"\r\n", 1)[0]
+    if b" 200 " not in status_line:
+        return {}
+    if b"transfer-encoding: chunked" in head.lower():
+        body = _decode_chunked(body)
+    start = body.find(b"[")
+    end = body.rfind(b"]")
+    if start < 0 or end < start:
+        return {}
+    try:
+        rows = json.loads(body[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
+    out: dict[str, str] = {}
+    if not isinstance(rows, list):
+        return {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "").strip()
+        if name:
+            out[name] = str(row.get("status") or "")
+    return out
+
+
+def aisuite_server_connected(servers: dict[str, str], *names: str) -> bool:
+    wanted = {name.lower() for name in names if name}
+    for name, status in servers.items():
+        if status != "connected":
+            continue
+        if name.lower() in wanted:
+            return True
+    return False
+
+
+def aisuite_gus_connected(servers: dict[str, str]) -> bool:
+    for name, status in servers.items():
+        if status != "connected":
+            continue
+        key = name.lower().replace("_", "-")
+        if key in {"gus", "gus-server", "dxmcp-gus"} or key.endswith("-gus"):
+            return True
+    return False
+
+
 def aisuite_server_cfg(server: str) -> dict | None:
     """Google and Slack on this machine come from AI Suite, not DevBar."""
     auth = aisuite_authorization()
@@ -1247,23 +1341,79 @@ def aisuite_server_cfg(server: str) -> dict | None:
     }
 
 
-def find_mcp_adaptor_bin() -> str:
+_ADAPTOR_PROVIDER_OK: dict[str, bool] = {}
+
+
+def _adaptor_candidates() -> list[str]:
+    found: list[tuple[float, str]] = []
+    seen: set[str] = set()
+
+    def add(path: str) -> None:
+        if not path:
+            return
+        try:
+            if not os.path.isfile(path):
+                return
+            real = os.path.realpath(path)
+            mtime = os.path.getmtime(path)
+        except OSError:
+            return
+        if real in seen:
+            return
+        seen.add(real)
+        found.append((mtime, path))
+
     folder = HOME / ".mcp-adaptor" / "bin"
+    if folder.is_dir():
+        for path in folder.iterdir():
+            if path.name.startswith("mcp-adaptor"):
+                add(str(path))
+    add(str(HOME / ".devbar" / "bin" / "mcp-adaptor"))
+    for name in ("mcp-adaptor", "mcp-adaptor-go"):
+        found_which = shutil.which(name) or ""
+        add(found_which)
+    found.sort(key=lambda item: item[0], reverse=True)
+    return [path for _mtime, path in found]
+
+
+def adaptor_supports_provider(binary: str) -> bool:
+    """v2.0.12 rejects --provider. A newer adaptor on the same Mac accepts it."""
+    if not binary:
+        return False
+    cached = _ADAPTOR_PROVIDER_OK.get(binary)
+    if cached is not None:
+        return cached
+    try:
+        proc = subprocess.run(
+            [binary, "auth", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+        text = (proc.stdout or "") + (proc.stderr or "")
+        ok = "--provider" in text
+    except (OSError, subprocess.TimeoutExpired):
+        ok = False
+    _ADAPTOR_PROVIDER_OK[binary] = ok
+    return ok
+
+
+def find_mcp_adaptor_bin() -> str:
     hinted = (os.environ.get("MCP_ADAPTOR_BIN") or "").strip()
     if hinted and os.path.isfile(hinted):
         return hinted
-    if folder.is_dir():
-        versioned = sorted(
-            (p for p in folder.glob("mcp-adaptor-go*") if p.is_file()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if versioned:
-            return str(versioned[0])
-        plain = folder / "mcp-adaptor"
-        if plain.is_file():
-            return str(plain)
-    return shutil.which("mcp-adaptor-go") or shutil.which("mcp-adaptor") or ""
+    candidates = _adaptor_candidates()
+    for binary in candidates:
+        if adaptor_supports_provider(binary):
+            return binary
+    return candidates[0] if candidates else ""
+
+
+def _auth_args(provider: str) -> list[str]:
+    binary = find_mcp_adaptor_bin()
+    if provider and adaptor_supports_provider(binary):
+        return ["--provider", provider]
+    return []
 
 
 def dx_google_connected() -> bool:
@@ -1277,7 +1427,7 @@ def dx_google_connected() -> bool:
 
 def dx_provider_connected(provider: str) -> bool:
     binary = find_mcp_adaptor_bin()
-    if not binary or not provider:
+    if not binary or not provider or not adaptor_supports_provider(binary):
         return False
     try:
         proc = subprocess.run(
@@ -1318,7 +1468,7 @@ def _launch_adaptor_auth(args: list[str], key: str, log_name: str) -> subprocess
 
 
 def start_dx_provider_auth(provider: str, log_name: str) -> None:
-    _launch_adaptor_auth(["--provider", provider], provider, log_name)
+    _launch_adaptor_auth(_auth_args(provider), provider, log_name)
 
 
 _LOGIN_URL_RE = re.compile(r"https://[^\s\"'<>]+")
@@ -1386,37 +1536,44 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
         _GOOGLE_DX_OK = True
 
 
-def begin_google_sign_in() -> dict:
+def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -> dict:
     """Open one sign-in page. A click with no browser is a failure, not a success."""
-    proc = _launch_adaptor_auth(
-        ["--provider", "google-workspace-rw"],
-        "google-workspace-rw",
-        ".dx-google-auth.log",
-    )
-    if _auth_shows_browser(".dx-google-auth.log", proc) or proc.poll() is None:
-        if proc.poll() is None:
+    if not find_mcp_adaptor_bin():
+        raise RuntimeError("DX adaptor is not installed on this machine")
+    args = _auth_args(provider)
+    proc = _launch_adaptor_auth(args, key, log_name)
+    shown = _auth_shows_browser(log_name, proc)
+    if not shown and proc.poll() is not None:
+        tail = _auth_log_text(log_name).lower()
+        if args and (
+            "unknown flag" in tail
+            or "unauthenticated" in tail
+            or "401" in tail
+            or "failed to initiate" in tail
+        ):
+            proc = _launch_adaptor_auth([], key + "-gateway", log_name)
+            shown = _auth_shows_browser(log_name, proc)
+    if shown or proc.poll() is None:
+        if provider == "google-workspace-rw" and proc.poll() is None:
             threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
         return {
             "ok": True,
             "started": True,
             "already": False,
-            "message": "Finish the Google sign-in in the browser, then this list refreshes.",
+            "message": f"Finish the {label} sign-in in the browser, then this list refreshes.",
         }
-    tail = _auth_log_text(".dx-google-auth.log")[-600:].lower()
-    if proc.poll() is not None and (
-        "unauthenticated" in tail or "401" in tail or "failed to initiate" in tail
-    ):
-        gateway = _launch_adaptor_auth([], "quantumk", ".dx-quantumk-auth.log")
-        if _auth_shows_browser(".dx-quantumk-auth.log", gateway):
-            return {
-                "ok": True,
-                "started": True,
-                "already": False,
-                "message": "Finish the sign-in in the browser, then click Sign in to Google again.",
-            }
-    lines = [line.strip() for line in _auth_log_text(".dx-google-auth.log").splitlines() if line.strip()]
-    last = lines[-1] if lines else "Could not open the Google sign-in"
+    lines = [line.strip() for line in _auth_log_text(log_name).splitlines() if line.strip()]
+    last = lines[-1] if lines else f"Could not open the {label} sign-in"
     raise RuntimeError(last[-240:])
+
+
+def begin_google_sign_in() -> dict:
+    return begin_provider_sign_in(
+        "google-workspace-rw",
+        "google-workspace-rw",
+        ".dx-google-auth.log",
+        "Google",
+    )
 
 
 def start_dx_google_auth(*, user_clicked: bool = False) -> None:
@@ -1433,7 +1590,7 @@ def start_dx_google_auth(*, user_clicked: bool = False) -> None:
 
 
 def start_dx_gus_auth() -> None:
-    start_dx_provider_auth("gus", ".dx-gus-auth.log")
+    begin_provider_sign_in("gus", "gus", ".dx-gus-auth.log", "GUS")
 
 
 def sf_gus_connected() -> bool:
@@ -1906,9 +2063,13 @@ def planner_mcp_status(runner: str = "") -> list[dict]:
         {"id": key, "label": label, "status": "disconnected", "note": ""}
         for key, label, _names in PLANNER_MCPS
     ]
+    suite = aisuite_manager_servers()
     google = aisuite_server_cfg("google-workspace")
-    google_status = ping_http_mcp(google) if google else "disconnected"
-    if google_status == "connected" or dx_google_connected():
+    google_up = aisuite_server_connected(suite, "google-workspace")
+    if not google_up:
+        google_status = ping_http_mcp(google) if google else "disconnected"
+        google_up = google_status == "connected" or dx_google_connected()
+    if google_up:
         for row in rows:
             if row["id"] in {"gmail", "calendar"}:
                 row["status"] = "connected"
@@ -1973,8 +2134,16 @@ def planner_mcp_status(runner: str = "") -> list[dict]:
     if orgcs and orgcs.get("status") != "connected" and orgcs_browser_session_ok():
         orgcs["status"] = "connected"
         orgcs["note"] = ""
+    slack = by_id.get("slack")
+    if slack and slack.get("status") != "connected" and aisuite_server_connected(suite, "slack"):
+        slack["status"] = "connected"
+        slack["note"] = ""
     gus = by_id.get("gus")
-    if gus and gus.get("status") != "connected" and (sf_gus_connected() or dx_provider_connected("gus")):
+    if gus and gus.get("status") != "connected" and (
+        aisuite_gus_connected(suite)
+        or sf_gus_connected()
+        or dx_provider_connected("gus")
+    ):
         gus["status"] = "connected"
         gus["note"] = ""
     return rows
@@ -12672,11 +12841,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "local only"})
                 return
             try:
-                start_dx_gus_auth()
+                self._json(200, begin_provider_sign_in("gus", "gus", ".dx-gus-auth.log", "GUS"))
             except Exception as exc:
                 self._json(502, {"error": str(exc) or "could not start the GUS sign-in"})
                 return
-            self._json(200, {"ok": True, "started": True})
             return
         try:
             body = json.loads(raw or b"{}")
