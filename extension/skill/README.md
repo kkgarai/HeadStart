@@ -24,6 +24,8 @@ In Chrome, `chrome://extensions` → Developer mode → **Load unpacked** → ch
 
 To remove the host, double-click `Uninstall Mac.command`, `Uninstall Windows.bat`, or `Uninstall Linux.sh` in that same folder, then remove the extension in `chrome://extensions`.
 
+Every update gets a new version number in `manifest.json`. The page name matches it, with ` beta` on the end. Development raises the last number only (`0.2.0.1`, then `0.2.0.2`) and stays off `main`. Merge to `main` when the third number changes (`0.2.1.0`). Update stays hidden when the version number did not change.
+
 **AI CLI without the extension**
 
 Keep the folder name `engineer-day-planner` if you invoke the skill from a chat on a machine that has no extension. That is a separate copy — do not keep it in sync with this extension from this repo.

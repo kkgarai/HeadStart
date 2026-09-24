@@ -64,7 +64,9 @@ The click fetches that branch and replaces the tracked files with it, then reloa
 
 A clone of `main` only sees versions that were merged to `main`. Development builds stay on their own branch.
 
-Versions are **0.2.x.y**. During development, raise **y** only (`0.2.0.1`, `0.2.0.2`) and leave those commits off `main`. Merge to `main` when **x** changes (`0.2.1.0`).
+Every update gets a new version number. The number in `manifest.json` and the name on the page move together. This copy is version `0.2.0.0` and name `0.2.0.0 beta`. The next development update is `0.2.0.1` and `0.2.0.1 beta`.
+
+Versions are **0.2.x.y**. During development, raise **y** only (`0.2.0.1`, `0.2.0.2`) and leave those commits off `main`. Merge to `main` when **x** changes (`0.2.1.0`). If the version number does not change, Update stays hidden.
 
 ## What you still set up yourself
 
