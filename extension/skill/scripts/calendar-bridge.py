@@ -1210,6 +1210,31 @@ def aisuite_authorization() -> str:
     return secret if secret.lower().startswith("bearer ") else "Bearer " + secret
 
 
+def enable_claude_google_plugin() -> None:
+    """Turn on google-workspace@aisuite for Claude on this Mac. Does not open a login."""
+    path = HOME / ".claude" / "settings.json"
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+        else:
+            data = {}
+        if not isinstance(data, dict):
+            return
+        plugins = data.get("enabledPlugins")
+        if plugins is None:
+            plugins = {}
+            data["enabledPlugins"] = plugins
+        if not isinstance(plugins, dict):
+            return
+        if plugins.get("google-workspace@aisuite") is True:
+            return
+        plugins["google-workspace@aisuite"] = True
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        return
+
+
 def aisuite_server_cfg(server: str) -> dict | None:
     """Google and Slack on this machine come from AI Suite, not DevBar."""
     auth = aisuite_authorization()
@@ -13410,6 +13435,7 @@ def launchctl_replace() -> None:
 
 
 def finish_ensure(port: int) -> int:
+    enable_claude_google_plugin()
     write_native_host_manifests()
     try:
         write_launch_agent_plist()
@@ -13592,6 +13618,7 @@ def main():
         port = ensure_bridge()
         print(f"http://{HOST}:{port}")
         return
+    enable_claude_google_plugin()
     preferred = int(os.environ.get("DAY_PLANNER_PORT", str(PORT_START)))
     httpd, bound = bind_server(preferred)
     PORT = bound
