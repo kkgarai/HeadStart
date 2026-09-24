@@ -4061,7 +4061,11 @@ def _done_inbox_keys() -> set:
 
 def write_planner_inbox_txt(slack: list, mail: list) -> None:
     done_keys = _done_inbox_keys()
-    slack_rows = [row for row in (slack or []) if not row.get("gusBot") and _inbox_still_open(row, done_keys)]
+    slack_rows = [
+        row
+        for row in (slack or [])
+        if not _sanitize_mod().is_gus_notice(row) and _inbox_still_open(row, done_keys)
+    ]
     mail_rows = [row for row in (mail or []) if _inbox_still_open(row, done_keys)]
 
     def slack_block(row: dict, n: int) -> str:
@@ -5174,7 +5178,7 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
     except Exception:
         done_inbox = set()
     for row in gather.get("slackCandidates") or []:
-        if row.get("gusBot") is True:
+        if _sanitize_mod().is_gus_notice(row):
             continue
         if not _inbox_still_open(row, done_inbox):
             continue

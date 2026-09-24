@@ -319,6 +319,7 @@ try:
             ident_path.write_text(json.dumps(blob) + "\n", encoding="utf-8")
 except Exception:
     pass
+sanitize.drop_gus_notices_from_slack(data)
 sanitize.ensure_gus_bot_rows(data)
 sanitize.omit_done_inbox_rows(data)
 sanitize.ensure_required_sections(data)

@@ -2421,6 +2421,45 @@ def stamp_case_our_updates(data: dict) -> None:
                     touch(it)
 
 
+_GUS_NOTICE_RE = re.compile(
+    r"gus chatter|work notifier|\bgus bot\b|chatter feed of this work",
+    re.I,
+)
+
+
+def is_gus_notice(row: object) -> bool:
+    """A GUS Bot or GUS Chatter post. It belongs on the GUS card, not Slack."""
+    if not isinstance(row, dict):
+        return False
+    if row.get("gusBot") is True:
+        return True
+    blob = " ".join(
+        str(row.get(key) or "")
+        for key in ("label", "detail", "from", "peer", "snippet", "openedClip", "update")
+    )
+    return bool(_GUS_NOTICE_RE.search(blob))
+
+
+def drop_gus_notices_from_slack(data: dict) -> None:
+    """GUS Chatter and GUS Bot stay on the GUS card. They do not also sit in Slack."""
+    if not isinstance(data, dict):
+        return
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        if not re.match(r"^slack\b", _section_key(sec.get("title")), re.I):
+            continue
+        sec["items"] = [it for it in (sec.get("items") or []) if not is_gus_notice(it)]
+        kept = []
+        for group in sec.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            group["items"] = [it for it in (group.get("items") or []) if not is_gus_notice(it)]
+            if group["items"]:
+                kept.append(group)
+        sec["groups"] = kept
+
+
 def _plain_gus_text(text: str) -> str:
     """Slack dumps, literal \\n, and non-breaking spaces become one readable line."""
     s = str(text or "")
@@ -5007,6 +5046,7 @@ def sanitize(data: dict) -> dict:
     organize_plan(data)
     split_bunched_cases(data)
     stamp_case_our_updates(data)
+    drop_gus_notices_from_slack(data)
     ensure_gus_bot_rows(data)
     ensure_lap_in_gus(data)
     hoist_peek_fields(data)
@@ -5029,5 +5069,6 @@ def sanitize(data: dict) -> dict:
     apply_notepad(data)
     sort_sections(data)
     omit_done_inbox_rows(data)
+    drop_gus_notices_from_slack(data)
     ensure_gus_bot_rows(data)
     return data
