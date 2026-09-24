@@ -9957,9 +9957,11 @@ def is_opus_model(model_id: str) -> bool:
 
 
 def fetch_sidecar_models(chosen: str) -> tuple[str, str]:
-    """Throwaway comment/email fetch. Opus compact-kills that session — Claude opus uses sonnet here only."""
+    """Throwaway comment/email fetch. Opus compact-kills that session, so use another model that already passed."""
     if is_claude_model(chosen) and is_opus_model(chosen):
-        return "sonnet", "claude-sonnet-5"
+        for mid in _known_good_models():
+            if "opus" not in mid.lower() and is_claude_model(mid):
+                return cli_flag_model(mid), mid
     return cli_flag_model(chosen), chosen
 
 
@@ -9979,9 +9981,100 @@ def set_plan_force_model(model_id: str) -> None:
     PLAN_FORCE_MODEL = (model_id or "").strip()
 
 
-def _model_needs_adaptive_thinking(model: str) -> bool:
-    """Sonnet 5 rejects thinking.type.enabled. It wants adaptive plus output_config.effort."""
-    return "sonnet-5" in (model or "").lower()
+_MODEL_SHAPE: dict[str, str] = {}
+_MODEL_SHAPE_LOCK = threading.Lock()
+
+
+def _known_good_models() -> list[str]:
+    with _MODEL_SHAPE_LOCK:
+        return [mid for mid, shape in _MODEL_SHAPE.items() if shape != "no"]
+
+
+def _planner_effort(model: str, payload: dict) -> str:
+    current = payload.get("output_config")
+    if isinstance(current, dict) and str(current.get("effort") or "").strip():
+        return str(current.get("effort")).strip()
+    return "low" if is_opus_model(model) else "medium"
+
+
+def _apply_planner_shape(payload: dict, shape: str, effort: str) -> None:
+    extra = payload.get("extra_body")
+    if isinstance(extra, dict):
+        extra.pop("thinking", None)
+        extra.pop("reasoning", None)
+    if shape == "adaptive":
+        payload["thinking"] = {"type": "adaptive"}
+        payload["output_config"] = {"effort": effort}
+        return
+    if shape == "enabled":
+        payload["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+        payload.pop("output_config", None)
+        return
+    for key in ("thinking", "reasoning", "reasoning_effort", "reasoningEffort", "output_config"):
+        payload.pop(key, None)
+
+
+def _suggests_adaptive(text: str) -> bool:
+    low = (text or "").lower()
+    return "adaptive" in low or "thinking.type" in low or "output_config" in low
+
+
+def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, str]:
+    payload = {
+        "model": model_id,
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "Reply with ok"}],
+    }
+    _apply_planner_shape(payload, shape, _planner_effort(model_id, payload))
+    payload["model"] = model_id
+    req = urllib.request.Request(
+        gateway_base().rstrip("/") + "/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers=gateway_headers(token),
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20, context=ssl_ctx()) as resp:
+            return int(getattr(resp, "status", 200) or 200), ""
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception:
+            body = ""
+        return int(exc.code or 0), body[:800]
+    except Exception as exc:
+        return 0, str(exc)[:400]
+
+
+def discover_model_shape(token: str, model_id: str) -> str:
+    """Try the planner request. Keep the first shape this model accepts. No per-model names."""
+    with _MODEL_SHAPE_LOCK:
+        known = _MODEL_SHAPE.get(model_id)
+    if known:
+        return known
+    status, body = _probe_gateway_message(token, model_id, "enabled")
+    if status in (401, 403):
+        raise RuntimeError("Gateway rejected the token while checking models")
+    shape = ""
+    if status == 200:
+        shape = "enabled"
+    elif status == 400 and _suggests_adaptive(body):
+        status, body = _probe_gateway_message(token, model_id, "adaptive")
+        if status in (401, 403):
+            raise RuntimeError("Gateway rejected the token while checking models")
+        if status == 200:
+            shape = "adaptive"
+    if not shape and status == 400:
+        status, _body = _probe_gateway_message(token, model_id, "plain")
+        if status in (401, 403):
+            raise RuntimeError("Gateway rejected the token while checking models")
+        if status == 200:
+            shape = "plain"
+    if not shape:
+        shape = "no"
+    with _MODEL_SHAPE_LOCK:
+        _MODEL_SHAPE[model_id] = shape
+    return shape
 
 
 def _prepare_gateway_message(payload: dict) -> None:
@@ -9989,26 +10082,11 @@ def _prepare_gateway_message(payload: dict) -> None:
     if forced:
         payload["model"] = forced
     model = str(payload.get("model") or "")
-    if _model_needs_adaptive_thinking(model):
-        effort = "medium"
-        current = payload.get("output_config")
-        if isinstance(current, dict) and str(current.get("effort") or "").strip():
-            effort = str(current.get("effort")).strip()
-        payload["thinking"] = {"type": "adaptive"}
-        payload["output_config"] = {"effort": effort}
-        extra = payload.get("extra_body")
-        if isinstance(extra, dict):
-            extra.pop("thinking", None)
-            extra.pop("reasoning", None)
-        return
-    if not forced:
-        return
-    for key in ("thinking", "reasoning", "reasoning_effort", "reasoningEffort", "output_config"):
-        payload.pop(key, None)
-    extra = payload.get("extra_body")
-    if isinstance(extra, dict):
-        extra.pop("reasoning", None)
-        extra.pop("thinking", None)
+    with _MODEL_SHAPE_LOCK:
+        shape = _MODEL_SHAPE.get(model) or "enabled"
+    if shape == "no":
+        shape = "enabled"
+    _apply_planner_shape(payload, shape, _planner_effort(model, payload))
 
 
 def plan_force_model() -> str:
@@ -10131,13 +10209,31 @@ def list_gateway_models(token: str) -> list[dict]:
             continue
         add(row.get("id") or row.get("model") or row.get("name") or "", row.get("owned_by") or "", row)
     models = [row for row in models if usable_planner_model(str(row.get("id") or ""))]
-    models.sort(key=lambda row: str(row.get("id") or "").lower())
     if not models:
         add(default_model())
         models = [row for row in models if usable_planner_model(str(row.get("id") or ""))]
-        if not models:
-            add(default_model())
-    return models
+    checked: list[dict] = []
+    auth_error = ""
+    if models:
+        with ThreadPoolExecutor(max_workers=min(6, len(models))) as pool:
+            futs = {
+                pool.submit(discover_model_shape, token, str(row.get("id") or "")): row
+                for row in models
+                if str(row.get("id") or "")
+            }
+            for fut in as_completed(futs):
+                row = futs[fut]
+                try:
+                    shape = fut.result()
+                except RuntimeError as exc:
+                    auth_error = str(exc)
+                    continue
+                if shape != "no":
+                    checked.append(row)
+    if auth_error and not checked:
+        raise RuntimeError(auth_error)
+    checked.sort(key=lambda row: str(row.get("id") or "").lower())
+    return checked
 
 
 def ask_now_line(data: dict) -> str:
@@ -12268,6 +12364,21 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         env["ANTHROPIC_BASE_URL"] = f"http://{HOST}:{PORT}"
         env.pop("ANTHROPIC_MODEL", None)
         set_plan_force_model(chosen)
+        try:
+            if discover_model_shape(token, chosen) == "no":
+                write_plan_state(
+                    state="error",
+                    error="This model does not accept the planner request. Pick another model.",
+                    finishedAt=now_stamp(),
+                )
+                return
+        except RuntimeError as exc:
+            write_plan_state(
+                state="error",
+                error=str(exc)[:400],
+                finishedAt=now_stamp(),
+            )
+            return
     elif tool["id"] == "opencode":
         strip_anthropic_env(env)
         set_plan_force_model("")
