@@ -13917,6 +13917,7 @@ def main():
         print(f"http://{HOST}:{port}")
         return
     enable_claude_google_plugin()
+    refresh_page_shell()
     preferred = int(os.environ.get("DAY_PLANNER_PORT", str(PORT_START)))
     httpd, bound = bind_server(preferred)
     PORT = bound
