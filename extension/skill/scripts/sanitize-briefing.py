@@ -3215,7 +3215,7 @@ def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
 
 
 def omit_done_inbox_rows(data: dict) -> None:
-    """Slack/Mail already Done stay off the leftover lists. Cases stay on the board."""
+    """Next Run Planner drops Slack/Mail already marked Done. The open page keeps them struck."""
     if not isinstance(data, dict):
         return
     keys = collect_done_keys(data)

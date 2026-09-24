@@ -2722,6 +2722,29 @@ def load_page_briefing() -> dict:
     return payload
 
 
+def refresh_page_shell() -> None:
+    """Keep this run's data and pick up page script fixes without another planner run."""
+    template = SKILL_ROOT / "page" / "template.html"
+    marker = "it.done !== true && !(it.id && isDone(it.id))"
+    if not PAGE.is_file() or not template.is_file():
+        return
+    try:
+        html = PAGE.read_text(encoding="utf-8")
+        shell = template.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if marker not in html or "__BRIEFING_DATA__" not in shell:
+        return
+    start = html.find(BRIEFING_SCRIPT_START)
+    if start < 0:
+        return
+    start += len(BRIEFING_SCRIPT_START)
+    end = html.find(BRIEFING_SCRIPT_END, start)
+    if end < 0:
+        return
+    PAGE.write_text(shell.replace("__BRIEFING_DATA__", html[start:end]), encoding="utf-8")
+
+
 def write_briefing_data(payload: dict) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError("briefing data is not an object")
@@ -12946,7 +12969,6 @@ class Handler(BaseHTTPRequestHandler):
                     save_done_ledger_from_data(payload)
                     sanit = _sanitize_mod()
                     sanit.apply_persisted_done(payload, None, load_done_ledger())
-                    sanit.omit_done_inbox_rows(payload)
                     sanit.drop_done_from_plan(payload)
                 except Exception:
                     pass

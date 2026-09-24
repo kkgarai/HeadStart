@@ -5197,19 +5197,6 @@
               return { title: g.title, items: rankItems(g.items, sec) };
             });
           }
-          if (/^(slack|mail|email|gmail)\b/.test(sectionKey(sec.title))) {
-            items = items.filter(function (it) {
-              return it && it.done !== true && !(it.id && isDone(it.id));
-            });
-            groups = groups.map(function (g) {
-              return {
-                title: g.title,
-                items: (g.items || []).filter(function (it) {
-                  return it && it.done !== true && !(it.id && isDone(it.id));
-                })
-              };
-            }).filter(function (g) { return (g.items || []).length; });
-          }
           items = doneLast(items, sec);
           groups = groups.map(function (g) {
             return { title: g.title, items: doneLast(g.items || [], sec) };
