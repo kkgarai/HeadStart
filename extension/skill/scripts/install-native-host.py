@@ -264,6 +264,33 @@ def snapshot_extension(skill: pathlib.Path) -> pathlib.Path:
     if skill_md.is_file():
         shutil.copy2(skill_md, skill_dir / "SKILL.md")
     (skill_dir / "out").mkdir(parents=True, exist_ok=True)
+    for name in (".done-keys.json", ".case-holds.json"):
+        src = (skill / "out") / name
+        dest = (skill_dir / "out") / name
+        if src.is_file() and not dest.is_file():
+            try:
+                shutil.copy2(src, dest)
+            except OSError:
+                pass
+    try:
+        raw = (host_support_dir() / "run-skill.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = ""
+    if raw:
+        prior = pathlib.Path(raw)
+        try:
+            prior.resolve().relative_to((host_support_dir() / "runs").resolve())
+        except (OSError, ValueError):
+            prior = None
+        if prior is not None:
+            for name in (".done-keys.json", ".case-holds.json"):
+                src = (prior / "out") / name
+                dest = (skill_dir / "out") / name
+                if src.is_file() and not dest.is_file():
+                    try:
+                        shutil.copy2(src, dest)
+                    except OSError:
+                        pass
     if manifest.is_file():
         (staging / "manifest.json").write_text(manifest.read_text(encoding="utf-8"), encoding="utf-8")
     panel = skill.parent / "panel.html"

@@ -289,6 +289,36 @@ def remember_skill(name: str, skill: pathlib.Path) -> None:
         pass
 
 
+def copy_prior_snapshot_ledgers(dest_out: pathlib.Path) -> None:
+    try:
+        raw = (support_dir() / "run-skill.txt").read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if not raw:
+        return
+    prior = pathlib.Path(raw)
+    try:
+        prior.resolve().relative_to((support_dir() / "runs").resolve())
+    except (OSError, ValueError):
+        return
+    copy_ledgers(prior / "out", dest_out)
+
+
+def copy_ledgers(src_out: pathlib.Path, dest_out: pathlib.Path) -> None:
+    """Keep Done marks and holds when a new version gets a fresh snapshot."""
+    if not src_out.is_dir():
+        return
+    dest_out.mkdir(parents=True, exist_ok=True)
+    for name in (".done-keys.json", ".case-holds.json"):
+        src = src_out / name
+        dest = dest_out / name
+        if src.is_file() and not dest.is_file():
+            try:
+                shutil.copy2(src, dest)
+            except OSError:
+                pass
+
+
 def snapshot_skill(skill: pathlib.Path) -> pathlib.Path:
     """Copy a protected folder aside so Chrome can run it from any location."""
     version = "0"
@@ -319,6 +349,8 @@ def snapshot_skill(skill: pathlib.Path) -> pathlib.Path:
     if skill_md.is_file():
         shutil.copy2(skill_md, skill_dir / "SKILL.md")
     (skill_dir / "out").mkdir(parents=True, exist_ok=True)
+    copy_ledgers(skill / "out", skill_dir / "out")
+    copy_prior_snapshot_ledgers(skill_dir / "out")
     if manifest.is_file():
         (staging / "manifest.json").write_text(manifest.read_text(encoding="utf-8"), encoding="utf-8")
     panel = skill.parent / "panel.html"
