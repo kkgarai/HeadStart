@@ -227,6 +227,43 @@ def host_support_dir() -> pathlib.Path:
     return pathlib.Path.home() / "Library" / "Application Support" / "engineer-day-planner"
 
 
+def remember_update_source(skill: pathlib.Path) -> None:
+    parent = skill.parent
+    root = parent if (parent / ".git").exists() else parent.parent
+    if not (root / ".git").exists():
+        return
+    try:
+        remote = subprocess.check_output(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(root),
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "@{u}"],
+            cwd=str(root),
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/") :]
+    if not remote or not branch or branch == "HEAD":
+        return
+    dest = host_support_dir()
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "update-source.json").write_text(
+            json.dumps({"remote": remote, "branch": branch}) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
 def write_note(name: str, skill: pathlib.Path) -> None:
     dest = host_support_dir()
     dest.mkdir(parents=True, exist_ok=True)
@@ -402,6 +439,7 @@ def main() -> int:
             f"calendar-bridge --ensure failed ({exc.returncode})\n"
         )
         return exc.returncode or 1
+    remember_update_source(skill)
     write_note("extension-skill.txt", skill)
     run_note = host_support_dir() / "run-skill.txt"
     if run_skill.resolve() != skill.resolve():

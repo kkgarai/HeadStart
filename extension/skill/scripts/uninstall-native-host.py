@@ -67,8 +67,15 @@ def should_stop(root: str, skill: pathlib.Path) -> bool:
     if same_path(heard, skill):
         return True
     noted_skill = read_note("extension-skill.txt")
-    noted_run = read_note("run-skill.txt")
-    return same_path(noted_skill, skill) and same_path(heard, noted_run)
+    if not same_path(noted_skill, skill):
+        return False
+    if same_path(heard, read_note("run-skill.txt")):
+        return True
+    try:
+        heard.resolve().relative_to((support_dir() / "runs").resolve())
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def stop_our_bridges(skill: pathlib.Path) -> int:
@@ -209,31 +216,57 @@ def remove_launch_agent() -> None:
             print(f"Could not remove {plist}: {exc}", file=sys.stderr)
 
 
-def remove_notes(skill: pathlib.Path) -> None:
+def cache_dir() -> pathlib.Path:
+    home = pathlib.Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches" / "engineer-day-planner"
+    if os.name == "nt":
+        return pathlib.Path(os.environ.get("LOCALAPPDATA") or home) / "engineer-day-planner"
+    root = pathlib.Path(os.environ.get("XDG_CACHE_HOME") or (home / ".cache"))
+    return root / "engineer-day-planner"
+
+
+def remove_tree(path: pathlib.Path) -> None:
+    if not path.exists():
+        return
+    shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        print(f"Could not remove {path}", file=sys.stderr)
+        return
+    print(f"Removed {path}")
+
+
+def remove_file(path: pathlib.Path) -> None:
+    try:
+        path.unlink()
+        print(f"Removed {path}")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"Could not remove {path}: {exc}", file=sys.stderr)
+
+
+def remove_owned_files(skill: pathlib.Path) -> None:
+    """Drop every file this install wrote outside the clone."""
     noted_skill = read_note("extension-skill.txt")
     if not same_path(noted_skill, skill):
         return
-    noted_run = read_note("run-skill.txt")
-    for name in ("extension-skill.txt", "run-skill.txt"):
-        path = support_dir() / name
-        try:
-            path.unlink()
-            print(f"Removed {path}")
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            print(f"Could not remove {path}: {exc}", file=sys.stderr)
-    if noted_run is None:
-        return
+    remove_tree(support_dir() / "runs")
+    remove_tree(cache_dir())
+    for name in (
+        "extension-skill.txt",
+        "run-skill.txt",
+        "update-source.json",
+        "apply-update.status",
+        "apply-update.command",
+    ):
+        remove_file(support_dir() / name)
+    remove_file(skill / "scripts" / "edp-native-host.cmd")
     try:
-        run = noted_run.resolve()
-        runs = (support_dir() / "runs").resolve()
-        run.relative_to(runs)
-    except (OSError, ValueError):
-        return
-    bundle = noted_run.parent if noted_run.name == "skill" else noted_run
-    shutil.rmtree(bundle, ignore_errors=True)
-    print(f"Removed snapshot {bundle}")
+        support_dir().rmdir()
+        print(f"Removed {support_dir()}")
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -244,7 +277,7 @@ def main() -> int:
     remove_windows_registry()
     remove_host_binary()
     remove_launch_agent()
-    remove_notes(skill)
+    remove_owned_files(skill)
     print("Native host removed.")
     print("In Chrome, open chrome://extensions and remove Engineer Day Planner.")
     print("Another copy of this extension on this Mac will need its installer again.")

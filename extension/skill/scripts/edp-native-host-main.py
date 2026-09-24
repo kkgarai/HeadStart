@@ -15,9 +15,11 @@ import shutil
 import struct
 import subprocess
 import sys
+import time
+import urllib.request
 
 CHROME_EXTENSION_ID = "ojpfakkcgmefanbomdfpglbioapoabfh"
-HOST_LOGIC_VERSION = 5
+HOST_LOGIC_VERSION = 6
 
 
 def read_msg():
@@ -646,18 +648,99 @@ def remote_manifest_version(root: pathlib.Path, ref: str) -> str:
     return manifest_version_text(raw)
 
 
+def folder_readable(root: pathlib.Path) -> bool:
+    try:
+        with open(root / "manifest.json", "rb") as handle:
+            handle.read(1)
+        return True
+    except OSError:
+        return False
+
+
+def github_raw_manifest(remote: str, branch: str) -> str:
+    remote = (remote or "").strip()
+    if remote.endswith(".git"):
+        remote = remote[:-4]
+    owner_repo = ""
+    if remote.startswith("git@github.com:"):
+        owner_repo = remote.split(":", 1)[1]
+    elif "github.com/" in remote:
+        owner_repo = remote.split("github.com/", 1)[1]
+    owner_repo = owner_repo.strip("/")
+    branch = (branch or "").strip()
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/") :]
+    if not owner_repo or not branch or "/" not in owner_repo:
+        return ""
+    url = f"https://raw.githubusercontent.com/{owner_repo}/{branch}/manifest.json"
+    try:
+        with urllib.request.urlopen(url, timeout=20) as resp:
+            return manifest_version_text(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return ""
+
+
+def saved_remote_version() -> str:
+    try:
+        data = json.loads((support_dir() / "update-source.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return github_raw_manifest(str(data.get("remote") or ""), str(data.get("branch") or ""))
+
+
+def remember_update_source(root: pathlib.Path) -> None:
+    """Record the GitHub branch this clone follows. Chrome cannot read Desktop, Documents, or Downloads."""
+    try:
+        remote = subprocess.check_output(
+            ["git", "-C", str(root), "remote", "get-url", "origin"],
+            cwd="/tmp",
+            env=git_env(),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--abbrev-ref", "@{u}"],
+            cwd="/tmp",
+            env=git_env(),
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/") :]
+    if not remote or not branch or branch == "HEAD":
+        return
+    dest = support_dir()
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "update-source.json").write_text(
+            json.dumps({"remote": remote, "branch": branch}) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+
+
 def update_check(requested: str) -> dict:
     root = loaded_git_root(requested)
     local = str(requested or "").strip()
-    if root is None:
-        return {"ok": True, "update": False}
-    if not local:
-        local = manifest_version_text((root / "manifest.json").read_text(encoding="utf-8"))
-    try:
-        ref = fetch_origin(root)
-        remote = remote_manifest_version(root, ref)
-    except Exception:
-        return {"ok": True, "update": False}
+    remote = ""
+    if root is not None and folder_readable(root):
+        if not local:
+            local = manifest_version_text((root / "manifest.json").read_text(encoding="utf-8"))
+        remember_update_source(root)
+        try:
+            ref = fetch_origin(root)
+            remote = remote_manifest_version(root, ref)
+        except Exception:
+            remote = ""
+    if not remote:
+        remote = saved_remote_version()
     if not remote or not local:
         return {"ok": True, "update": False}
     return {
@@ -668,25 +751,70 @@ def update_check(requested: str) -> dict:
     }
 
 
+def terminal_reset(root: pathlib.Path) -> bool:
+    """Desktop, Documents, and Downloads are blocked for Chrome's host. Terminal can still write them."""
+    if sys.platform != "darwin":
+        return False
+    status = support_dir() / "apply-update.status"
+    try:
+        status.unlink()
+    except OSError:
+        pass
+    root_s = str(root).replace("'", "'\\''")
+    status_s = str(status).replace("'", "'\\''")
+    shell = (
+        "git -C '%s' fetch origin && "
+        "ref=$(git -C '%s' rev-parse --abbrev-ref '@{u}') && "
+        "git -C '%s' reset --hard \"$ref\" && "
+        "echo ok > '%s'; exit"
+    ) % (root_s, root_s, root_s, status_s)
+    try:
+        subprocess.run(
+            ["osascript", "-e", "tell application \"Terminal\" to do script " + json.dumps(shell)],
+            cwd="/tmp",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    deadline = time.time() + 90
+    while time.time() < deadline:
+        try:
+            if status.read_text(encoding="utf-8").strip() == "ok":
+                return True
+        except OSError:
+            pass
+        time.sleep(0.4)
+    return False
+
+
 def update_apply(requested: str) -> dict:
     root = loaded_git_root(requested)
     if root is None:
         return {"ok": False, "error": "The loaded folder is not a git clone."}
     try:
-        ref = fetch_origin(root)
-        subprocess.check_call(
-            ["git", "reset", "--hard", ref],
-            cwd=str(root),
-            env=git_env(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=60,
-        )
+        if folder_readable(root):
+            ref = fetch_origin(root)
+            subprocess.check_call(
+                ["git", "-C", str(root), "reset", "--hard", ref],
+                cwd="/tmp",
+                env=git_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60,
+            )
+        elif not terminal_reset(root):
+            return {"ok": False, "error": "Could not update from origin."}
     except subprocess.CalledProcessError:
         return {"ok": False, "error": "Could not update from origin."}
     except Exception as exc:
         return {"ok": False, "error": str(exc)[:240]}
-    version = manifest_version_text((root / "manifest.json").read_text(encoding="utf-8"))
+    version = ""
+    if folder_readable(root):
+        version = manifest_version_text((root / "manifest.json").read_text(encoding="utf-8"))
+    if not version:
+        version = saved_remote_version()
     return {"ok": True, "version": version}
 
 

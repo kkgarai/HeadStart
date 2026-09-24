@@ -1,6 +1,6 @@
 # Day Planner
 
-Chrome extension for an engineer’s shift. Version **0.2.0.6 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.0.7 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
@@ -39,7 +39,7 @@ If the bridge has stopped, the page sends you back to that folder to double-clic
 
 ## Uninstall the host
 
-Double-click the uninstaller in that same folder. It removes the native host and stops the bridge that belongs to this copy. Then open `chrome://extensions` and remove Engineer Day Planner.
+Double-click the uninstaller in that same folder. It stops this copy's bridge and removes the native host, its snapshots, and its cache. Then open `chrome://extensions` and remove Engineer Day Planner.
 
 | This computer | Double-click |
 |---|---|
@@ -52,6 +52,8 @@ This host name is shared with any other Engineer Day Planner loaded on the same 
 ## Update
 
 **Update** appears on the extension bar when a newer version is available for this copy. Click it. The extension reloads, and the bridge starts from that version. Done marks stay on this computer.
+
+If this folder is on the Desktop, in Documents, or in Downloads, double-click the installer once. Chrome cannot read those folders. The installer records the GitHub branch that Update follows.
 
 ## What you still set up yourself
 
