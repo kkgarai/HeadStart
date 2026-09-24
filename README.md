@@ -58,15 +58,7 @@ This host name is shared with any other Engineer Day Planner loaded on the same 
 
 ## Update
 
-**Update** appears on the extension bar only when the branch this clone follows has a higher version than the one Chrome loaded.
-
-The click fetches that branch and replaces the tracked files with it, then reloads the extension. The bridge then starts from those files. Done marks and holds live in `skill/out/`, which git does not track, so that click leaves them in place.
-
-A clone of `main` only sees versions that were merged to `main`. Development builds stay on their own branch.
-
-Every update gets a new version number. The number in `manifest.json` and the name on the page move together. This copy is version `0.2.0.0` and name `0.2.0.0 beta`. The next development update is `0.2.0.1` and `0.2.0.1 beta`.
-
-Versions are **0.2.x.y**. During development, raise **y** only (`0.2.0.1`, `0.2.0.2`) and leave those commits off `main`. Merge to `main` when **x** changes (`0.2.1.0`). If the version number does not change, Update stays hidden.
+**Update** appears on the extension bar when a newer version is available for this copy. Click it. The extension reloads, and the bridge starts from that version. Done marks stay on this computer.
 
 ## What you still set up yourself
 
