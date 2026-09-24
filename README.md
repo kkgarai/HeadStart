@@ -15,13 +15,6 @@ git clone https://github.com/kkgarai/day-planner.git
 cd day-planner
 ```
 
-The enterprise copy, for people who already have access:
-
-```bash
-git clone https://github.com/kgarai_sfemu/day-planner.git
-cd day-planner
-```
-
 1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `day-planner` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
 
 2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose that folder.

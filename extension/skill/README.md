@@ -13,13 +13,6 @@ git clone https://github.com/kkgarai/day-planner.git
 cd day-planner
 ```
 
-Enterprise copy, for people who already have access:
-
-```bash
-git clone https://github.com/kgarai_sfemu/day-planner.git
-cd day-planner
-```
-
 In Chrome, `chrome://extensions` → Developer mode → **Load unpacked** → choose `day-planner`. First machine, once: double-click `Install Mac.command`, `Install Windows.bat`, or `Install Linux.sh` in that folder. After that, the toolbar starts the bridge. Do not copy this folder into a skills directory.
 
 To remove the host, double-click `Uninstall Mac.command`, `Uninstall Windows.bat`, or `Uninstall Linux.sh` in that same folder, then remove the extension in `chrome://extensions`.
