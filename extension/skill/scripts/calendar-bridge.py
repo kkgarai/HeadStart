@@ -4066,7 +4066,11 @@ def write_planner_inbox_txt(slack: list, mail: list) -> None:
         for row in (slack or [])
         if not _sanitize_mod().is_gus_notice(row) and _inbox_still_open(row, done_keys)
     ]
-    mail_rows = [row for row in (mail or []) if _inbox_still_open(row, done_keys)]
+    mail_rows = [
+        row
+        for row in (mail or [])
+        if not _sanitize_mod()._is_gus_notice_mail(row) and _inbox_still_open(row, done_keys)
+    ]
 
     def slack_block(row: dict, n: int) -> str:
         lines = [f"## slack {row.get('id') or ''}", f"- label: {row.get('label') or ''}", f"- peer: {row.get('peer') or ''}"]

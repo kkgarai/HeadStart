@@ -2542,7 +2542,8 @@ def ensure_gus_bot_rows(data: dict) -> None:
                 continue
             seen.add(ident)
             rows.append(row)
-    if not rows:
+    mails = _gus_notice_mails(data, gather)
+    if not rows and not mails:
         return
     sec = next(
         (
@@ -2614,9 +2615,116 @@ def ensure_gus_bot_rows(data: dict) -> None:
             }
         )
         have.add(ident)
+    _attach_gus_notice_mail(items, mails)
+    _drop_gus_notice_mail(data, mails)
     sec["items"] = items
     if items:
         sec.pop("empty", None)
+
+
+def _notice_ids(text: str) -> tuple[set[str], set[str]]:
+    raw = _plain_gus_text(text)
+    works = set(re.findall(r"W-\d+", raw, re.I))
+    cases = set(re.findall(r"(?:OrgCS(?:\s+Case)?(?:\s+No\.?)?\s*#?\s*)(\d{6,})", raw, re.I))
+    return works, cases
+
+
+def _is_gus_notice_mail(row: dict) -> bool:
+    blob = " ".join(
+        str(row.get(key) or "")
+        for key in ("from", "label", "detail", "snippet", "openedClip", "subject")
+    )
+    if re.search(r"daily digest", blob, re.I):
+        return False
+    if not re.search(r"gus-chatter-notifications|gus chatter", blob, re.I):
+        return False
+    works, cases = _notice_ids(blob)
+    return bool(works or cases or re.search(r"mentioned you", blob, re.I))
+
+
+def _gus_mail_url(row: dict) -> str:
+    for key in ("mailUrl", "gmailUrl", "messageUrl"):
+        url = str(row.get(key) or "").strip()
+        if "mail.google.com" in url.lower() or "gmail.com" in url.lower():
+            return url
+    mid = str(row.get("messageId") or "")
+    if not mid:
+        found = re.search(
+            r"#all/([0-9a-f]{10,})",
+            " ".join(str(row.get(k) or "") for k in ("id", "snippet", "openedClip")),
+            re.I,
+        )
+        mid = found.group(1) if found else ""
+    if mid:
+        return f"https://mail.google.com/mail/u/0/#all/{mid}"
+    return ""
+
+
+def _gus_notice_mails(data: dict, gather: dict) -> list[dict]:
+    found: list[dict] = []
+    seen: set[str] = set()
+    pools: list = []
+    for src in (gather.get("mailCandidates"), data.get("mailCandidates")):
+        if isinstance(src, list):
+            pools.extend(src)
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict) or not re.match(r"^(mail|email|gmail)\b", _section_key(sec.get("title")), re.I):
+            continue
+        pools.extend(sec.get("items") or [])
+        for group in sec.get("groups") or []:
+            if isinstance(group, dict):
+                pools.extend(group.get("items") or [])
+    for row in pools:
+        if not isinstance(row, dict) or not _is_gus_notice_mail(row):
+            continue
+        ident = str(row.get("id") or row.get("messageId") or _gus_mail_url(row))
+        if not ident or ident in seen:
+            continue
+        seen.add(ident)
+        found.append(row)
+    return found
+
+
+def _attach_gus_notice_mail(items: list, mails: list[dict]) -> None:
+    for mail in mails:
+        blob = " ".join(str(mail.get(key) or "") for key in ("label", "detail", "snippet", "openedClip", "from"))
+        works, cases = _notice_ids(blob)
+        url = _gus_mail_url(mail)
+        if not url:
+            continue
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            have_w, have_c = _notice_ids(f"{it.get('label') or ''} {it.get('detail') or ''}")
+            if (works and works & have_w) or (cases and cases & have_c):
+                it["mailUrl"] = url
+                break
+
+
+def _drop_gus_notice_mail(data: dict, mails: list[dict]) -> None:
+    drop_ids = {str(row.get("id") or "") for row in mails if row.get("id")}
+    if not drop_ids:
+        return
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict) or not re.match(r"^(mail|email|gmail)\b", _section_key(sec.get("title")), re.I):
+            continue
+        sec["items"] = [
+            it
+            for it in (sec.get("items") or [])
+            if str(it.get("id") or "") not in drop_ids and not _is_gus_notice_mail(it)
+        ]
+        kept = []
+        for group in sec.get("groups") or []:
+            if not isinstance(group, dict):
+                continue
+            group["items"] = [
+                it
+                for it in (group.get("items") or [])
+                if str(it.get("id") or "") not in drop_ids and not _is_gus_notice_mail(it)
+            ]
+            if group["items"]:
+                kept.append(group)
+        sec["groups"] = kept
 
 
 def ensure_lap_in_gus(data: dict) -> None:
