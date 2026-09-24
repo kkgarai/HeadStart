@@ -1295,24 +1295,85 @@ _DX_AUTH_LOCK = threading.Lock()
 _DX_AUTH_PROCS: dict[str, subprocess.Popen] = {}
 
 
-def start_dx_provider_auth(provider: str, log_name: str) -> None:
+def _launch_adaptor_auth(args: list[str], key: str, log_name: str) -> subprocess.Popen:
     binary = find_mcp_adaptor_bin()
     if not binary:
         raise RuntimeError("DX adaptor is not installed on this machine")
     with _DX_AUTH_LOCK:
-        running = _DX_AUTH_PROCS.get(provider)
+        running = _DX_AUTH_PROCS.get(key)
         if running is not None and running.poll() is None:
-            return
+            return running
         log = SKILL_ROOT / "out" / log_name
         log.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(log, "a", encoding="utf-8")
-        _DX_AUTH_PROCS[provider] = subprocess.Popen(
-            [binary, "auth", "--provider", provider],
+        handle = open(log, "w", encoding="utf-8")
+        proc = subprocess.Popen(
+            [binary, "auth", *args],
             stdin=subprocess.DEVNULL,
             stdout=handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
+        _DX_AUTH_PROCS[key] = proc
+        return proc
+
+
+def start_dx_provider_auth(provider: str, log_name: str) -> None:
+    _launch_adaptor_auth(["--provider", provider], provider, log_name)
+
+
+_LOGIN_URL_RE = re.compile(r"https://[^\s\"'<>]+")
+
+
+def _auth_log_text(log_name: str) -> str:
+    path = SKILL_ROOT / "out" / log_name
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _login_url(text: str) -> str:
+    for match in _LOGIN_URL_RE.finditer(text or ""):
+        url = match.group(0).rstrip(").,>")
+        if "localhost" in url or "127.0.0.1" in url:
+            continue
+        return url
+    return ""
+
+
+def _open_browser(url: str) -> None:
+    if not url.startswith("https://"):
+        return
+    if sys.platform == "darwin":
+        cmd = ["open", url]
+    elif sys.platform == "win32":
+        cmd = ["cmd", "/c", "start", "", url]
+    else:
+        cmd = ["xdg-open", url]
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _auth_shows_browser(log_name: str, proc: subprocess.Popen, wait: float = 4.0) -> str:
+    """Wait until a sign-in page is available, then open it once."""
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        text = _auth_log_text(log_name)
+        url = _login_url(text)
+        if url:
+            _open_browser(url)
+            return "browser"
+        if proc.poll() is not None:
+            break
+        time.sleep(0.25)
+    if proc.poll() is None and "Opening browser" in _auth_log_text(log_name):
+        return "browser"
+    return ""
 
 
 def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
@@ -1325,6 +1386,39 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
         _GOOGLE_DX_OK = True
 
 
+def begin_google_sign_in() -> dict:
+    """Open one sign-in page. A click with no browser is a failure, not a success."""
+    proc = _launch_adaptor_auth(
+        ["--provider", "google-workspace-rw"],
+        "google-workspace-rw",
+        ".dx-google-auth.log",
+    )
+    if _auth_shows_browser(".dx-google-auth.log", proc) or proc.poll() is None:
+        if proc.poll() is None:
+            threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
+        return {
+            "ok": True,
+            "started": True,
+            "already": False,
+            "message": "Finish the Google sign-in in the browser, then this list refreshes.",
+        }
+    tail = _auth_log_text(".dx-google-auth.log")[-600:].lower()
+    if proc.poll() is not None and (
+        "unauthenticated" in tail or "401" in tail or "failed to initiate" in tail
+    ):
+        gateway = _launch_adaptor_auth([], "quantumk", ".dx-quantumk-auth.log")
+        if _auth_shows_browser(".dx-quantumk-auth.log", gateway):
+            return {
+                "ok": True,
+                "started": True,
+                "already": False,
+                "message": "Finish the sign-in in the browser, then click Sign in to Google again.",
+            }
+    lines = [line.strip() for line in _auth_log_text(".dx-google-auth.log").splitlines() if line.strip()]
+    last = lines[-1] if lines else "Could not open the Google sign-in"
+    raise RuntimeError(last[-240:])
+
+
 def start_dx_google_auth(*, user_clicked: bool = False) -> None:
     """Open one Google window only when the user clicked Sign in.
 
@@ -1335,14 +1429,7 @@ def start_dx_google_auth(*, user_clicked: bool = False) -> None:
         return
     if _GOOGLE_DX_OK or _dx_session_ready():
         return
-    with _DX_AUTH_LOCK:
-        running = _DX_AUTH_PROCS.get("google-workspace-rw")
-        if running is not None and running.poll() is None:
-            return
-    start_dx_provider_auth("google-workspace-rw", ".dx-google-auth.log")
-    proc = _DX_AUTH_PROCS.get("google-workspace-rw")
-    if proc is not None and proc.poll() is None:
-        threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
+    begin_google_sign_in()
 
 
 def start_dx_gus_auth() -> None:
@@ -12563,22 +12650,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "local only"})
                 return
             try:
-                if _GOOGLE_DX_OK or _dx_session_ready():
-                    self._json(200, {"ok": True, "already": True, "started": False})
-                    return
                 running = _DX_AUTH_PROCS.get("google-workspace-rw")
                 if running is not None and running.poll() is None:
-                    self._json(200, {"ok": True, "already": True, "started": False})
+                    self._json(
+                        200,
+                        {
+                            "ok": True,
+                            "already": True,
+                            "started": False,
+                            "message": "The Google sign-in is already open in the browser.",
+                        },
+                    )
                     return
-                suite = aisuite_server_cfg("google-workspace")
-                if suite and ping_http_mcp(suite) == "connected":
-                    self._json(200, {"ok": True, "already": True, "started": False})
-                    return
-                start_dx_google_auth(user_clicked=True)
+                self._json(200, begin_google_sign_in())
             except Exception as exc:
                 self._json(502, {"error": str(exc) or "could not start the Google sign-in"})
                 return
-            self._json(200, {"ok": True, "started": True, "already": False})
             return
         if path == "/mcp/gus-auth":
             if self.client_address[0] not in ("127.0.0.1", "::1"):
