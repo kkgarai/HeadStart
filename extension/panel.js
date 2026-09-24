@@ -239,10 +239,15 @@ function collectImportantEventIds(data) {
   return ids;
 }
 
+function localZoneName() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) { return ""; }
+}
+
 function todayKey(tz) {
   try {
+    const zone = tz || localZoneName();
     const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: tz || "America/Los_Angeles",
+      timeZone: zone || undefined,
       year: "numeric",
       month: "2-digit",
       day: "2-digit"
@@ -292,7 +297,7 @@ function briefingDayKey(data) {
   };
   const mon = months[match[1].slice(0, 3).toLowerCase()];
   if (!mon) return "";
-  const today = todayKey((data && data.timezone) || "America/Los_Angeles");
+  const today = todayKey((data && data.timezone) || localZoneName());
   let year = today.slice(0, 4);
   let key = year + mon + String(match[2]).padStart(2, "0");
   if (key > today) key = String(Number(year) - 1) + mon + String(match[2]).padStart(2, "0");
@@ -303,7 +308,7 @@ function briefingIsToday(data) {
   if (!data || typeof data !== "object") return false;
   const day = briefingDayKey(data);
   if (!day) return true;
-  return day === todayKey(data.timezone || "America/Los_Angeles");
+  return day === todayKey(data.timezone || localZoneName());
 }
 
 async function readPublishedPage() {
@@ -359,9 +364,9 @@ async function refreshCalendarThenShow() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          timezone: data.timezone || "America/Los_Angeles",
-          shiftStart: data.shiftStart || "08:00",
-          shiftEnd: data.shiftEnd || "17:00",
+          timezone: data.timezone || "",
+          shiftStart: data.shiftStart || "",
+          shiftEnd: data.shiftEnd || "",
           importantEventIds: collectImportantEventIds(data)
         }),
         signal: AbortSignal.timeout(8000)
@@ -1080,7 +1085,7 @@ async function pageJsonWithDone() {
     const data = await readPublishedPage();
     if (!data || typeof data !== "object" || !briefingIsToday(data)) return null;
     const stored = await chrome.storage.local.get(["edpDone"]);
-    edpApplyLedger(data, edpActiveKeys(stored.edpDone || {}));
+    edpApplyLedger(data, edpActiveKeys(stored.edpDone || {}, data.timezone));
     return data;
   } catch (_) {
     return null;

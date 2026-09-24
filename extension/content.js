@@ -27,8 +27,9 @@ async function loadLedger() {
 }
 
 async function saveLedger(ledger) {
+  const page = readBriefing();
   const next = {
-    keys: edpPruneLedgerKeys((ledger && ledger.keys) || {}, Date.now()),
+    keys: edpPruneLedgerKeys((ledger && ledger.keys) || {}, Date.now(), page && page.timezone),
     updatedAt: Date.now()
   };
   await chrome.storage.local.set({ edpDone: next });
@@ -72,7 +73,7 @@ function migrateLegacyKeys(into, data) {
       try { localStorage.removeItem(name); } catch (_) {}
     });
   } catch (_) {}
-  return edpPruneLedgerKeys(into, now);
+  return edpPruneLedgerKeys(into, now, data && data.timezone);
 }
 
 function paintDone(ids) {
@@ -113,7 +114,7 @@ async function applyOnLoad() {
     }
   });
   await saveLedger(ledger);
-  const keys = edpActiveKeys(ledger);
+  const keys = edpActiveKeys(ledger, data.timezone);
   const changed = edpApplyLedger(data, keys);
   const queued = edpSyncQueuePlanBlocks(data);
   if (changed || queued) {

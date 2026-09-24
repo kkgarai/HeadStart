@@ -461,7 +461,7 @@ async function syncFromBridge() {
     const snap = await resp.json();
     await chrome.storage.local.set({ snapshot: snap });
     const storedDone = await chrome.storage.local.get(["edpDone"]);
-    const doneKeys = edpActiveKeys(storedDone.edpDone || {});
+    const doneKeys = edpActiveKeys(storedDone.edpDone || {}, snap.timezone);
     const n = snap.needYou;
     chrome.action.setBadgeBackgroundColor({ color: "#ba0517" });
     chrome.action.setBadgeText({ text: n > 0 ? String(n) : "" });

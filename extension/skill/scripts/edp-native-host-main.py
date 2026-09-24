@@ -307,7 +307,8 @@ def copy_prior_snapshot_ledgers(dest_out: pathlib.Path) -> None:
 
 
 def copy_ledgers(src_out: pathlib.Path, dest_out: pathlib.Path) -> None:
-    """Keep Done marks and holds when a new version gets a fresh snapshot."""
+    """A new version snapshot starts empty. Do not carry Done marks or holds forward."""
+    return
     if not src_out.is_dir():
         return
     dest_out.mkdir(parents=True, exist_ok=True)

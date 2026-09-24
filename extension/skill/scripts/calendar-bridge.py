@@ -27,6 +27,45 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
+def local_zone_name() -> str:
+    """This computer's IANA zone. Never store this as the shift zone."""
+    try:
+        key = str(getattr(datetime.now().astimezone().tzinfo, "key", "") or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    try:
+        link = pathlib.Path("/etc/localtime").resolve()
+        parts = link.parts
+        if "zoneinfo" in parts:
+            name = "/".join(parts[parts.index("zoneinfo") + 1 :])
+            if name:
+                ZoneInfo(name)
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def zoneinfo_or_local(name: str = ""):
+    """Datetime math only. An empty name is not stored as the shift zone."""
+    raw = str(name or "").strip()
+    if raw:
+        try:
+            return ZoneInfo(raw)
+        except Exception:
+            pass
+    try:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def zone_for_math(tzname: str = ""):
+    return zoneinfo_or_local(tzname)
+
+
 HOST = "127.0.0.1"
 SERVICE = "engineer-day-planner"
 PORT_START = int(os.environ.get("DAY_PLANNER_PORT", "8765"))
@@ -619,10 +658,13 @@ def model_brief() -> str:
     except (OSError, json.JSONDecodeError):
         gather = {}
     lines.append(
-        "header daypart={dp} shift={a}-{b} calendar={cal} slackFetchOk={s} mailFetchOk={m} gusFetchOk={g} assembled={asm}".format(
+        "header daypart={dp} shift={a}-{b} timezone={tz} timezoneShort={tzs} engineerShift={es} calendar={cal} slackFetchOk={s} mailFetchOk={m} gusFetchOk={g} assembled={asm}".format(
             dp=gather.get("daypart") or "",
             a=gather.get("shiftStart") or "",
             b=gather.get("shiftEnd") or "",
+            tz=gather.get("timezone") or "unresolved",
+            tzs=gather.get("timezoneShort") or "",
+            es=gather.get("engineerShift") or "",
             cal=gather.get("calendarFetchOk") is True,
             s=gather.get("slackFetchOk") is True,
             m=gather.get("mailFetchOk") is True,
@@ -630,6 +672,14 @@ def model_brief() -> str:
             asm=str(gather.get("assembledSchedule") or "")[:180],
         )
     )
+    if not str(gather.get("timezone") or "").strip():
+        lines.append(
+            "timezone is unresolved. You write timezone (IANA) and timezoneShort on /tmp/plan-ai.json. "
+            "Use Engineer_Shift__c when engineerShift is set. Assembled is only when that field is empty. "
+            "Asia/Kolkata, Asia/Calcutta, and Asia/Colombo are IST. That is the label only. "
+            "Do not change a timezone or shift hours that are already set. Do not invent Pacific. "
+            "Do not invent a night window. Hours differ per engineer."
+        )
     lines.append("Meetings:")
     for ev in (gather.get("meetings") or [])[:16]:
         if isinstance(ev, dict):
@@ -2343,7 +2393,7 @@ def reattach_primary_calendar(data: dict | None = None) -> None:
     """Re-fetch today's primary events so morning Google rows survive a gather that started at now."""
     if data is None:
         data = load_live_briefing()
-    tzname = str(data.get("timezone") or "America/Los_Angeles")
+    tzname = str(data.get("timezone") or "").strip()
     result = fetch_primary_events(
         tzname,
         important_ids=_important_event_ids(data),
@@ -2658,7 +2708,7 @@ SLACK_MCP_NAMES = ("slack",)
 GUS_MCP_NAMES = ("gus_server", "gus-server", "gus")
 
 
-def _pt_when(iso: str, tzname: str = "America/Los_Angeles") -> str:
+def _pt_when(iso: str, tzname: str = "") -> str:
     """Calendar date and time in GMT. Weekday labels are not stored."""
     del tzname
     raw = str(iso or "").strip()
@@ -2969,7 +3019,7 @@ def merge_case_activity(
 def fill_case_peeks(
     data: dict, rows: list[dict] | None = None, *, wipe_summary: bool = False
 ) -> None:
-    tzname = str(data.get("timezone") or "America/Los_Angeles")
+    tzname = str(data.get("timezone") or "").strip()
     by_num = {}
     for row in rows or []:
         if isinstance(row, dict) and row.get("CaseNumber"):
@@ -3789,6 +3839,7 @@ def fill_slack_leftovers(data: dict) -> None:
     gus_bot["query"] = f"is:dm Work Notifier after:{after}"
     gus_bot["filters"] = gus_bot["query"]
     gus_bot["_keep_bots"] = True
+    gus_bot["_gus_bot"] = True
     case_sla = _slack_search_args(f"\"15 Minute SLA Warning\" after:{after}", mentions=True)
     case_sla["include_bots"] = True
     case_sla["query"] = f"\"15 Minute SLA Warning\" after:{after}"
@@ -3819,10 +3870,12 @@ def fill_slack_leftovers(data: dict) -> None:
     data["slackFetchOk"] = False
     data["slackFetchError"] = ""
 
-    def add_hits(text: str, unread: bool, *, keep_bots: bool = False, authored_threads: bool = False) -> None:
+    def add_hits(text: str, unread: bool, *, keep_bots: bool = False, authored_threads: bool = False, gus_bot: bool = False) -> None:
         for item in _parse_slack_search(
             text, data, keep_bots=keep_bots, involved_user="" if keep_bots else me
         ):
+            if gus_bot:
+                item["gusBot"] = True
             if authored_threads:
                 cid0 = str(item.get("channelId") or "")
                 channel0 = str(item.get("channel") or "")
@@ -3853,6 +3906,7 @@ def fill_slack_leftovers(data: dict) -> None:
             cursor = ""
             keep_bots = bool(args.get("_keep_bots"))
             authored_threads = bool(args.get("_authored_threads"))
+            gus_bot_query = bool(args.get("_gus_bot"))
             for _ in range(5):
                 payload = {k: v for k, v in args.items() if not str(k).startswith("_")}
                 if cursor:
@@ -3865,7 +3919,7 @@ def fill_slack_leftovers(data: dict) -> None:
                 except Exception as exc:
                     last_err = clip(str(exc), 180)
                     break
-                add_hits(text, unread, keep_bots=keep_bots, authored_threads=authored_threads)
+                add_hits(text, unread, keep_bots=keep_bots, authored_threads=authored_threads, gus_bot=gus_bot_query)
                 if "0 results" in (text or "").lower() and "### Result" not in _slack_search_body(text):
                     break
                 cursor = _slack_next_cursor(text)
@@ -4374,7 +4428,7 @@ def evidence_from_seed(seeded: dict) -> dict:
     else:
         seeded["_calendarFetchTried"] = True
         try:
-            tzname = str(seeded.get("timezone") or "America/Los_Angeles")
+            tzname = str(seeded.get("timezone") or "").strip()
             got = fetch_primary_events(
                 tzname,
                 shift_start=str(seeded.get("shiftStart") or "") or None,
@@ -4482,8 +4536,10 @@ def evidence_from_seed(seeded: dict) -> dict:
         "name": seeded.get("name") or "",
         "title": seeded.get("title") or "",
         "manager": seeded.get("manager") or "",
-        "timezone": seeded.get("timezone") or "America/Los_Angeles",
+        "timezone": seeded.get("timezone") or "",
+        "timezoneUnresolved": not str(seeded.get("timezone") or "").strip(),
         "timezoneShort": seeded.get("timezoneShort") or "",
+        "engineerShift": seeded.get("engineerShift") or "",
         "daypart": seeded.get("daypart") or "mid",
         "shiftStart": seeded.get("shiftStart") or "",
         "shiftEnd": seeded.get("shiftEnd") or "",
@@ -4673,8 +4729,8 @@ def seed_plan_from_live() -> dict:
                 pass
     if not isinstance(data.get("sections"), list) or not data.get("sections"):
         data = {
-            "timezone": str(data.get("timezone") or "America/Los_Angeles"),
-            "timezoneShort": str(data.get("timezoneShort") or "PDT"),
+            "timezone": str(data.get("timezone") or ""),
+            "timezoneShort": str(data.get("timezoneShort") or ""),
             "shiftStart": str(data.get("shiftStart") or "08:00"),
             "shiftEnd": str(data.get("shiftEnd") or "17:00"),
             "daypart": str(data.get("daypart") or "mid"),
@@ -4772,6 +4828,14 @@ def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
             merged = dict(prev)
             merged.update(peeks)
             data["peeks"] = merged
+        if not str(data.get("timezone") or "").strip():
+            chosen = str(ai.get("timezone") or "").strip()
+            if chosen:
+                data["timezone"] = chosen
+            short = str(ai.get("timezoneShort") or "").strip()
+            if short and not str(data.get("timezoneShort") or "").strip():
+                data["timezoneShort"] = short
+        apply_general_shift_hours(data)
         for sec in data.get("sections") or []:
             if not isinstance(sec, dict):
                 continue
@@ -5603,12 +5667,13 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             return False
         if data.get("notThePage") is True or str(data.get("kind") or "") == "planner-evidence":
             return False
-        data = apply_ai_overlay(data, started_epoch)
-        apply_live_assembled(data)
         try:
             fetch_orgcs_identity(data)
         except Exception:
             pass
+        apply_live_assembled(data)
+        data = apply_ai_overlay(data, started_epoch)
+        apply_general_shift_hours(data)
         prev = None
         try:
             prev = load_page_briefing()
@@ -5989,14 +6054,11 @@ def _shift_window(data: dict, meetings: list) -> tuple[datetime, datetime]:
             day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
             break
     if day is None:
-        tzname = data.get("timezone") or "America/Los_Angeles"
-        try:
-            tz = ZoneInfo(tzname)
-        except Exception:
-            tz = ZoneInfo("America/Los_Angeles")
-        now = datetime.now(tz)
+        tzname = str(data.get("timezone") or "").strip()
+        now = datetime.now(zone_for_math(tzname))
         day = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-    sh, sm, eh, em = 8, 0, 17, 0
+    known_zone = bool(str(data.get("timezone") or "").strip())
+    sh, sm, eh, em = (8, 0, 17, 0) if known_zone else (0, 0, 0, 0)
     match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftStart") or "").strip())
     if match:
         sh, sm = int(match.group(1)), int(match.group(2))
@@ -6006,7 +6068,7 @@ def _shift_window(data: dict, meetings: list) -> tuple[datetime, datetime]:
     start = day.replace(hour=sh, minute=sm, second=0, microsecond=0)
     end = day.replace(hour=eh, minute=em, second=0, microsecond=0)
     if end <= start:
-        end = start + timedelta(hours=9)
+        end = end + timedelta(days=1)
     return start, end
 
 
@@ -6106,22 +6168,21 @@ def _work_label(prefix: str, item: dict) -> str:
 
 
 def ensure_page_stamp(data: dict, *, refresh: bool = False) -> None:
-    tzname = data.get("timezone") or "America/Los_Angeles"
-    try:
-        tz = ZoneInfo(tzname)
-    except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
-    now = datetime.now(tz)
+    tzname = str(data.get("timezone") or "").strip()
+    now = datetime.now(zone_for_math(tzname))
     stamp = str(data.get("stamp") or "").strip()
     generated = str(data.get("generatedAt") or "").strip()
     if refresh or not stamp:
         data["stamp"] = fmt_day_clock(now)
     if refresh or not generated:
         data["generatedAt"] = now.strftime("%Y%m%dT%H%M%S")
-    if not str(data.get("timezoneShort") or "").strip():
-        short = str(now.tzname() or "").replace("PDT", "PT").replace("PST", "PT").replace("EDT", "ET").replace("EST", "ET")
-        if short:
-            data["timezoneShort"] = short
+    if tzname and not str(data.get("timezoneShort") or "").strip():
+        if tzname in {"Asia/Kolkata", "Asia/Calcutta", "Asia/Colombo"}:
+            data["timezoneShort"] = "IST"
+        else:
+            short = str(now.tzname() or "").replace("PDT", "PT").replace("PST", "PT").replace("EDT", "ET").replace("EST", "ET")
+            if short:
+                data["timezoneShort"] = short
 
 
 def compose_work_into_data(data: dict) -> dict:
@@ -6179,12 +6240,8 @@ def merge_calendar_into_page(events: list, tzname: str = "") -> None:
         save_done_ledger_from_data(data)
     except Exception:
         pass
-    zone = tzname or data.get("timezone") or "America/Los_Angeles"
-    try:
-        tz = ZoneInfo(zone)
-    except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
-    data["stamp"] = fmt_day_clock(datetime.now(tz))
+    zone = str(tzname or data.get("timezone") or "").strip()
+    data["stamp"] = fmt_day_clock(datetime.now(zone_for_math(zone)))
     write_briefing_data(data)
 
 
@@ -6953,7 +7010,7 @@ def parse_stamp(stamp: str, tzname: str):
         return None
     try:
         dt = datetime.strptime(stamp[:15], "%Y%m%dT%H%M%S")
-        return dt.replace(tzinfo=ZoneInfo(tzname))
+        return dt.replace(tzinfo=zone_for_math(tzname))
     except ValueError:
         return None
 
@@ -6972,11 +7029,14 @@ _STAMP_MONTH = {
 
 
 def briefing_tz(data: dict):
-    tzname = str((data or {}).get("timezone") or "America/Los_Angeles").strip() or "America/Los_Angeles"
+    """Shift zone only. An empty name means the model still has to resolve it."""
+    tzname = str((data or {}).get("timezone") or "").strip()
+    if not tzname:
+        return "", zoneinfo_or_local()
     try:
         return tzname, ZoneInfo(tzname)
     except Exception:
-        return "America/Los_Angeles", ZoneInfo("America/Los_Angeles")
+        return "", zoneinfo_or_local()
 
 
 def tz_short_for(tzname: str, fallback: str = "") -> str:
@@ -7018,7 +7078,7 @@ def apply_ask_view(data: dict, body: dict | None = None) -> None:
 
 
 def view_tz_name(data: dict) -> str:
-    return str(data.get("_viewTz") or data.get("timezone") or "America/Los_Angeles")
+    return str(data.get("_viewTz") or data.get("timezone") or "").strip()
 
 
 def view_tz_short(data: dict) -> str:
@@ -7205,12 +7265,12 @@ def is_meeting(item: dict) -> bool:
 
 
 def shift_now(data: dict):
-    tzname = data.get("timezone") or "America/Los_Angeles"
+    tzname = str(data.get("timezone") or "").strip()
     try:
-        tz = ZoneInfo(tzname)
+        tz = ZoneInfo(tzname) if tzname else zoneinfo_or_local()
     except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
-        tzname = "America/Los_Angeles"
+        tz = zoneinfo_or_local()
+        tzname = ""
     return datetime.now(tz), tzname
 
 
@@ -7263,7 +7323,7 @@ def ask_clock(data: dict, now: datetime | None = None) -> dict:
     if now is None:
         now = live
     elif now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo(tzname))
+        now = now.replace(tzinfo=zone_for_math(tzname))
     short = view_tz_short(data)
     stamp = fmt_day_clock(to_view(now, data))
     if short:
@@ -7738,9 +7798,10 @@ def _to_stamp(raw: str, tzname: str, *, allow_all_day: bool = False) -> str | No
         dt = datetime.fromisoformat(raw)
     except ValueError:
         return None
+    tz = zone_for_math(tzname)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo(tzname))
-    local = dt.astimezone(ZoneInfo(tzname))
+        dt = dt.replace(tzinfo=tz)
+    local = dt.astimezone(tz)
     return local.strftime("%Y%m%dT%H%M%S")
 
 
@@ -7839,13 +7900,20 @@ def shift_pad_stamps(
     shift_end: str | None = None,
 ) -> tuple[str, str]:
     """Shift login−2h through logout+2h, as YYYYMMDDTHHMMSS wall stamps."""
-    tz = ZoneInfo(tzname)
+    tz = zone_for_math(tzname)
     now = datetime.now(tz)
     day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    have_hours = bool(str(shift_start or "").strip() and str(shift_end or "").strip())
+    if not have_hours and not str(tzname or "").strip():
+        lo = day
+        hi = day + timedelta(days=1)
+        return lo.strftime("%Y%m%dT%H%M%S"), hi.strftime("%Y%m%dT%H%M%S")
     sh, sm = _parse_hm(shift_start, CAL_SHIFT_START)
     eh, em = _parse_hm(shift_end, CAL_SHIFT_END)
     lo = day.replace(hour=sh, minute=sm) - timedelta(hours=CAL_PAD_HOURS)
     hi = day.replace(hour=eh, minute=em) + timedelta(hours=CAL_PAD_HOURS)
+    if hi <= lo:
+        hi = hi + timedelta(days=1)
     return lo.strftime("%Y%m%dT%H%M%S"), hi.strftime("%Y%m%dT%H%M%S")
 
 
@@ -7855,7 +7923,7 @@ def day_window(tzname: str, time_min: str | None = None, time_max: str | None = 
     Query the civil day so Refresh can still see important meetings outside
     shift±2h. bound_events then keeps shift±2h, plus ids the gather marked important.
     """
-    tz = ZoneInfo(tzname)
+    tz = zone_for_math(tzname)
     now = datetime.now(tz).replace(second=0, microsecond=0)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     day_end = day_start + timedelta(days=1)
@@ -7866,9 +7934,10 @@ def day_window(tzname: str, time_min: str | None = None, time_max: str | None = 
 
 def _stamp_from_iso(raw: str, tzname: str) -> str:
     dt = datetime.fromisoformat(raw)
+    tz = zone_for_math(tzname)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo(tzname))
-    return dt.astimezone(ZoneInfo(tzname)).strftime("%Y%m%dT%H%M%S")
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz).strftime("%Y%m%dT%H%M%S")
 
 
 def _duration_min(start: str, end: str) -> int:
@@ -8116,10 +8185,12 @@ def _assembled_block_schedule(work: list, tz) -> tuple[str, object, object, str]
 
 def fetch_assembled_today(tzname: str) -> dict:
     """Today's Assembled calendar blocks. Shift login/logout is min/max of those blocks."""
+    given = str(tzname or "").strip()
     try:
-        tz = ZoneInfo((tzname or "").strip() or "America/Los_Angeles")
+        tz = ZoneInfo(given) if given else timezone.utc
     except Exception:
-        tz = ZoneInfo("America/Los_Angeles")
+        tz = timezone.utc
+        given = ""
     now_local = datetime.now(tz)
     start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     end_local = start_local + timedelta(days=1)
@@ -8158,20 +8229,112 @@ def fetch_assembled_today(tzname: str) -> dict:
         work.append(ev)
     if not work:
         return {}
-    hours, login, logout, short = _assembled_block_schedule(work, tz)
-    return {
+    display = tz
+    resolved = given
+    if not given:
+        src = getattr(work[0]["start"], "tzinfo", None)
+        key = str(getattr(src, "key", "") or "").strip()
+        if key:
+            try:
+                display = ZoneInfo(key)
+                resolved = key
+            except Exception:
+                display = src or timezone.utc
+        else:
+            display = src or timezone.utc
+    hours, login, logout, short = _assembled_block_schedule(work, display)
+    out = {
         "assembledFromCalendar": True,
         "assembledSchedule": hours,
         "shiftStart": login.strftime("%H:%M"),
         "shiftEnd": logout.strftime("%H:%M"),
-        "timezone": str(tz),
-        "timezoneShort": short,
     }
+    if resolved:
+        out["timezone"] = resolved
+        if short:
+            out["timezoneShort"] = short
+    return out
+
+
+# OrgCS Engineer_Shift__c codes. Unknown codes stay empty so the model resolves them.
+ORGCS_SHIFT_ZONES = {
+    "PST": ("America/Los_Angeles", "PT"),
+    "AMER-PST": ("America/Los_Angeles", "PT"),
+    "EST": ("America/New_York", "ET"),
+    "AMER-EST": ("America/New_York", "ET"),
+    "CST": ("America/Chicago", "CT"),
+    "MST": ("America/Denver", "MT"),
+    "IST": ("Asia/Kolkata", "IST"),
+    "APAC-INDIA": ("Asia/Kolkata", "IST"),
+    "JAPAN": ("Asia/Tokyo", "JST"),
+    "APAC-ANZ": ("Australia/Sydney", "AEST"),
+    "EMEA": ("Europe/London", "GMT"),
+    "AMER-LATAM": ("America/Sao_Paulo", "BRT"),
+}
+
+
+def orgcs_shift_zone(code: str) -> tuple[str, str]:
+    key = re.sub(r"\s+", "-", str(code or "").strip()).upper()
+    return ORGCS_SHIFT_ZONES.get(key) or ("", "")
+
+
+def _clock_hhmm(hour: str, minute: str, ap: str) -> str:
+    h = int(hour) % 12
+    if str(ap or "").upper() == "PM":
+        h += 12
+    return f"{h:02d}:{int(minute or 0):02d}"
+
+
+def parse_aboutme_hours(text: str) -> tuple[str, str]:
+    """Working Hours written on the OrgCS User. Empty when that line is absent."""
+    hit = re.search(r"working\s*hours?\s*[:\-]?\s*(.+)", str(text or ""), re.I)
+    if not hit:
+        return "", ""
+    hm = re.search(
+        r"(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\s*(?:-|–|—|to)\s*(\d{1,2})(?::(\d{2}))?\s*(AM|PM)",
+        hit.group(1),
+        re.I,
+    )
+    if not hm:
+        return "", ""
+    return _clock_hhmm(hm.group(1), hm.group(2), hm.group(3)), _clock_hhmm(hm.group(4), hm.group(5), hm.group(6))
+
+
+def apply_orgcs_shift(data: dict, code: str, about: str) -> None:
+    """OrgCS owns the shift when Engineer_Shift__c is set. Hours come from AboutMe when written."""
+    label = str(code or "").strip()
+    if not label:
+        return
+    data["engineerShift"] = label
+    zone, short = orgcs_shift_zone(label)
+    if zone:
+        data["timezone"] = zone
+        if short and not str(data.get("timezoneShort") or "").strip():
+            data["timezoneShort"] = short
+    start, end = parse_aboutme_hours(about)
+    if start and end:
+        data["shiftStart"] = start
+        data["shiftEnd"] = end
+        data["shiftHoursFrom"] = "orgcs"
+
+
+def apply_general_shift_hours(data: dict) -> None:
+    """8:00 AM–5:00 PM in the shift zone, only when no source gave hours."""
+    if not isinstance(data, dict):
+        return
+    if str(data.get("shiftStart") or "").strip() and str(data.get("shiftEnd") or "").strip():
+        return
+    if not str(data.get("timezone") or "").strip():
+        return
+    data["shiftStart"] = "08:00"
+    data["shiftEnd"] = "17:00"
+    data["shiftHoursFrom"] = "general"
 
 
 def apply_live_assembled(data: dict) -> None:
     if not isinstance(data, dict):
         return
+    orgcs_owns = bool(str(data.get("engineerShift") or "").strip())
     try:
         got = fetch_assembled_today(str(data.get("timezone") or ""))
         data["calendarFetchOk"] = True
@@ -8181,19 +8344,24 @@ def apply_live_assembled(data: dict) -> None:
         append_plan_step(kind="log", label="Calendar/Assembled fetch failed · " + data["calendarFetchError"])
         data["assembledFromCalendar"] = False
         data["assembledSchedule"] = ""
+        apply_general_shift_hours(data)
         return
     live = bool(got.get("assembledFromCalendar") and got.get("assembledSchedule"))
     data["assembledFromCalendar"] = live
     if live:
         data["assembledSchedule"] = got["assembledSchedule"]
-        data["shiftStart"] = got["shiftStart"]
-        data["shiftEnd"] = got["shiftEnd"]
-        if got.get("timezone"):
-            data["timezone"] = got["timezone"]
-        if got.get("timezoneShort"):
-            data["timezoneShort"] = got["timezoneShort"]
-        return
-    data["assembledSchedule"] = ""
+        if not orgcs_owns:
+            if not str(data.get("shiftStart") or "").strip():
+                data["shiftStart"] = got["shiftStart"]
+                data["shiftEnd"] = got["shiftEnd"]
+                data["shiftHoursFrom"] = "assembled"
+            if not str(data.get("timezone") or "").strip() and got.get("timezone"):
+                data["timezone"] = got["timezone"]
+            if got.get("timezoneShort") and not str(data.get("timezoneShort") or "").strip():
+                data["timezoneShort"] = got["timezoneShort"]
+    else:
+        data["assembledSchedule"] = ""
+    apply_general_shift_hours(data)
 
 
 def assembled_shift_cluster(now, events: list[dict]):
@@ -8262,7 +8430,7 @@ def _omni_display_tz():
     except Exception:
         name = ""
     try:
-        return ZoneInfo(name or "America/Los_Angeles")
+        return zoneinfo_or_local(name)
     except Exception:
         return timezone.utc
 
@@ -8491,7 +8659,7 @@ def fetch_orgcs_identity(data: dict) -> None:
             text = mcp_call_named(
                 ORGCS_MCP_NAMES,
                 "soqlQuery",
-                {"q": "SELECT Name, Title, Email, Username, Manager.Name FROM User WHERE Id = '%s' LIMIT 1" % uid},
+                {"q": "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name FROM User WHERE Id = '%s' LIMIT 1" % uid},
                 timeout=20,
             )
         except Exception:
@@ -8502,6 +8670,7 @@ def fetch_orgcs_identity(data: dict) -> None:
         title = str(rec.get("Title") or "").strip()
         mgr = rec.get("Manager") if isinstance(rec.get("Manager"), dict) else {}
         manager = str((mgr or {}).get("Name") or "").strip()
+        apply_orgcs_shift(data, str(rec.get("Engineer_Shift__c") or ""), str(rec.get("AboutMe") or ""))
         for key in ("Email", "Username"):
             val = str(rec.get(key) or "").strip()
             if "@" in val:
@@ -11076,7 +11245,7 @@ def try_python_orgcs_activity(ids: list[str], seeded: dict) -> int:
         return 0
     if not comments_by and not emails_by and not feeds_by:
         return 0
-    tzname = str(seeded.get("timezone") or "America/Los_Angeles")
+    tzname = str(seeded.get("timezone") or "").strip()
     n = 0
     for sec in seeded.get("sections") or []:
         if not isinstance(sec, dict):
@@ -11379,7 +11548,7 @@ def _is_custom_plan_block(item: dict) -> bool:
 def snapshot_payload() -> dict:
     data = load_live_briefing()
     remind = []
-    tzname = data.get("timezone") or "America/Los_Angeles"
+    tzname = str(data.get("timezone") or "").strip()
     now, _ = shift_now(data)
     done_keys = set()
     sanit = None
@@ -12343,7 +12512,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/calendar/replies":
-            tz = body.get("timezone") or "America/Los_Angeles"
+            tz = str(body.get("timezone") or "").strip()
             try:
                 result = fetch_primary_events(
                     tz,
@@ -12372,7 +12541,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(502, {"error": msg or "calendar reply lookup failed"})
             return
         if path == "/calendar/refresh":
-            tz = body.get("timezone") or "America/Los_Angeles"
+            tz = str(body.get("timezone") or "").strip()
             try:
                 result = fetch_primary_events(
                     tz,
@@ -12498,7 +12667,7 @@ class Handler(BaseHTTPRequestHandler):
         if not event_id:
             self._json(400, {"error": "eventId is required"})
             return
-        tz = body.get("timezone") or "America/Los_Angeles"
+        tz = str(body.get("timezone") or "").strip()
         try:
             if path == "/calendar/update":
                 start = body.get("start") or body.get("start_time")

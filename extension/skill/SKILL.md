@@ -20,7 +20,7 @@ One glanceable summary that tells you exactly what to do next **and when** — o
 
 **Who this engineer is** comes from the OrgCS User every run — never a hardcoded name, title, manager, cloud, or skill group. **Stamp Name and Manager on the page header** (SOD, Mid-Day, End of Day). Do **not** print a heading called `Identity` (not on the page, not in chat). Cloud / Skill Group only if the User record says so. Full rule: **Appendix — Identity**.
 
-**Shift timezone** comes from Assembled, compared with (or falling back to) OrgCS `Engineer_Shift__c`. Stamp the resolved **12-hour** shift line **on the page header** on **every** daypart — never glued to Follow-up due, never as Assembled UTC math (`15:00Z`). Full rule: **Appendix — Shift clock**.
+**Shift timezone** comes from OrgCS `Engineer_Shift__c`. If that field is empty, Assembled. If hours are still empty, 8:00 AM–5:00 PM in that zone. Stamp the resolved **12-hour** shift line **on the page header** on **every** daypart — never glued to Follow-up due, never as Assembled UTC math (`15:00Z`). Full rule: **Appendix — Shift clock**.
 
 **HARD RULE — MCP arguments (do not rediscover).** Call these tools with **these names only**. Do not ToolSearch schemas. Do not pass `query` for SOQL — OrgCS treats a missing `q` as an empty statement (`MALFORMED_QUERY`).
 
@@ -39,7 +39,7 @@ One glanceable summary that tells you exactly what to do next **and when** — o
 
 ## Timezone — read this first
 
-The machine clock is IST and is useless for shift math. **Assembled is the shift clock.** Typical Support day is **8:00 AM – 5:00 PM** in the chosen zone — that window is how you **choose the GEO**, not a 6:00–10:59 morning band. OrgCS `Engineer_Shift__c` is a **compare and a fallback**, not a hidden PT/ET default. Never assume AMER-PST or AMER-EST.
+The machine clock is not the shift clock. OrgCS `Engineer_Shift__c` is the shift. Assembled is next, only when that field is empty. 8:00 AM–5:00 PM in the shift zone is the last resort when hours are still empty. Hours differ per engineer. Never assume a night window, AMER-PST, or AMER-EST.
 
 After the zone is resolved:
 
@@ -819,7 +819,7 @@ Page look: Salesforce Lightning / Primer — **neutral surfaces**, navy/off-whit
 - **EOD is not a full Day plan.** Next working-day skeleton (or WOC remainder) stays a skeleton. SOD and MID keep full named follow-ups, meals, and meetings.
 - **Line breaks whenever required.** Blank line before every section header; blank line between day-plan blocks; each bullet, numbered step, status line, and header fact on its own line. Prefer blank lines wherever chat markdown would otherwise glue content into a run-on paragraph. Self-check the composed brief before sending. Kiran should never have to ask for line breaks after the fact (see Step 3).
 - **12-hour clock in the brief.** Every printed time is 12-hour **in the resolved shift timezone** with AM/PM (`8:00–9:00 AM`, `1:00–2:00 PM`). Same period once at the end of the range; if the range crosses noon or midnight, put AM/PM on both ends (`11:00 AM–12:00 PM`). Header clock too (`8:51 AM PDT`). Never print 24-hour (`13:00`, `17:00`, `08:00`). Internal math may use 24-hour; the reply does not.
-- **Shift timezone from Assembled, with OrgCS compare/fallback.** Never default all math to `America/Los_Angeles`. Never invent PT or ET when both Assembled and `Engineer_Shift__c` are missing. Full rule at the end of this skill.
+- **Shift timezone from OrgCS `Engineer_Shift__c`, then Assembled, then 8:00 AM–5:00 PM in that zone.** Never default all math to `America/Los_Angeles`. Never invent PT or ET when the zone is missing. Never use the laptop zone as the shift zone. Full rule at the end of this skill.
 - **Identity from the OrgCS User.** Never hardcode this engineer’s name, title, manager, cloud, or skill group. Print Name and Manager at the top of SOD, Mid-Day, and End of Day. Full rule at the end of this skill.
 - **Case.Description always.** Every open case in the gather wave includes `Description` — never Subject-only.
 - **Case activity = Comment + Email + Feed/chatter.** Never rank a case from CaseComment alone; EmailMessage and CaseFeed (with nested FeedComment) are mandatory peers. Internal comments count for holds and scheduled touches.
@@ -836,7 +836,7 @@ Page look: Salesforce Lightning / Primer — **neutral surfaces**, navy/off-whit
 - **Follow-up due is cases-only, signal-only, and last among ranked case blocks.** Quiet past hold, pending us or pending them. Not unresponded inbound. **Level 1 / Sev-1: 1+ business day, listed first. All other severities: 2+ business days.** Honor internal follow-up dates, customer wait windows, and weekends. Wait/peek owned cases that **do not** trip this test → **👀 Still watching** (not calendar week; not Fire; not Needs us now; not a dump of the open queue). **Keep the heading when the list is empty** (count 0, no “none” placeholder). **Each case is its own bullet with `#CaseNumber — {short what-it-is}`** — never a comma-separated number list. Full rule at the end of this skill.
 - **Every source, every run.** OrgCS cases (Description + Comment + Email + Feed + **Initial Response** + **GUS related list**), Case_Relationship/**LAP status+chatter**, GUS (**incl. SLA/due dates**), Gmail, **Slack (mandatory: paginate DMs + @-mentions + threads since last logout, then open leftovers with `slack_read_channel` / `slack_read_thread`** — plus this engineer’s **WOC roster post**, channel not hardcoded), **primary Calendar**, **Assembled** (shift login/logout, previous-logout overnight window, chat vs casework / lunch / break / your PTO / weekend), **Omni presence** (this engineer, during shift), and **team PTO** (named people only) are all mandatory gathers — never skip one because another looks empty or “thin.” Filter hard in ranking; gather complete. **AI analysis of OrgCS, GUS, Slack, Calendar, and Mail is mandatory every run.**
 - **Assembled chat = reshape, don’t ignore.** A Chat (or live-queue) block on Assembled is not a footnote — the day plan must change. No 📥 / 🔧 inside chat hours.
-- **Assembled owns working days and shift timing.** Discover Assembled and team PTO with `list_calendars` every run — **never store a calendar id or calendar name in this skill.** Login = first shift event; logout = last. Previous working day = previous weekday Assembled (or `Engineer_Shift__c` 5:00 PM if that day is empty) — do not pull ~10 days of Assembled. Overnight starts at that logout. Never use location/national holidays to decide if or when you work. Casework on a holiday = working day. Empty Assembled = not scheduled **unless** the Slack WOC roster lists this engineer that day — then it is a WOC working day; use 8:00 AM–5:00 PM in the resolved zone on the Shift line only. Never print the word `fallback` in the brief.
+- **OrgCS owns the shift clock. Assembled owns the block list and Omni.** Discover Assembled and team PTO with `list_calendars` every run — **never store a calendar id or calendar name in this skill.** Login and logout come from OrgCS Working Hours when written, else Assembled when `Engineer_Shift__c` is empty, else 8:00 AM–5:00 PM in the shift zone. Previous working day = previous weekday. Do not pull ~10 days of Assembled. Never use location/national holidays to decide if or when you work. Casework on a holiday = working day. Empty Assembled = not scheduled **unless** the Slack WOC roster lists this engineer that day — then it is a WOC working day; use 8:00 AM–5:00 PM in the resolved zone on the Shift line only. Never print the word `fallback` in the brief.
 - **One weekend/WOC 📅 stamp.** Never two lines that both mean “you’re on WOC / weekend shift.” Merge Slack role + Assembled hours onto one line; if Assembled has no hours, print only `📅 WOC {day} — {role}`. **No roster and no Assembled weekend hours → omit the stamp and stay silent about it.** Never print that a WOC schedule was not found. Never print `No WOC line`, `no roster`, or `not on the roster`.
 - **Omni during shift.** Match Omni to the Assembled block covering now. **In adherence** = **Screen Sharing** (never OOA) **or** the status for that block. **Busy**, Offline / `End of Work` / no current row on a **work** block, or Available missing that block’s channel → **point it out** (`⚠️ Omni: out of adherence`) and leave the plan alone. Offline during Assembled Lunch, Break, or Dinner is in adherence. Omit when in adherence, off-shift, or PTO. Do not roster other people’s Omni.
 - **WOC from Slack, channel not hardcoded.** Discover the latest weekend-on-call **roster post** in **this engineer’s** Slack. Do not pin a channel, poster, or spreadsheet. If they are on that roster (after thread swaps), their remainder goes on **EOD of the last working day before that WOC**. Task Remainders named to them come from Slack the same way. Do not dump the team list. Print WOC as **one** header line (role from Slack; hours from Assembled only when present). **Print that line only when a roster (or Assembled weekend hours) is found.** No roster → omit, including in any preamble before the brief. Never print `⚠️ WOC schedule not found in Slack`, `No WOC line — no roster`, `no roster`, or `not on the roster`.
@@ -917,48 +917,32 @@ Manager: {Manager.Name}
 
 Omit the manager line if Manager is blank. **Cloud / skill group — only if the record says so.** OrgCS has no `User.Description`; the free-text bio is **`AboutMe`**. If `AboutMe` names a **Cloud** or **Skill Group**, use that wording. If `AboutMe` has no Cloud line, `Engineer_Cloud__c` may fill Cloud when it is populated. If neither Cloud nor Skill Group is on the record, **do not mention a cloud or skill group** — do not invent “Service Cloud,” “Developer Support,” or a GEO team name.
 
-Do **not** print Hub, Mobile, Working Days, or Working Hours from `AboutMe` as identity color. Those hours/GEO may **corroborate** the shift clock (below); they do not replace Assembled.
+Do **not** print Hub, Mobile, Working Days, or Working Hours from `AboutMe` as identity color. Working Hours on `AboutMe` are the shift hours when they are written there.
 
 ### Shift clock
 
-Do **not** assume AMER-PST, AMER-EST, or any other GEO. Support shifts include **APAC, EMEA, IST, JP, AMER-EST, AMER-PST**, and others.
+Hours differ per engineer. Do not assume a night window. Do not assume AMER-PST or AMER-EST. Do not use the laptop zone as the shift zone.
 
-Read **Assembled** and the OrgCS User together every run (`Engineer_Shift__c`; `AboutMe` GEO/hours only as extra color). Typical Support day is **8:00 AM–5:00 PM** in the chosen zone.
+1. OrgCS `Engineer_Shift__c` is the shift. The picklist sets the zone. Working Hours on the User record set login and logout when they are written there.
+2. If `Engineer_Shift__c` is empty, Assembled login and logout are the shift, including the IANA zone on those events when it is present.
+3. If a zone is known and hours are still empty, the shift is **8:00 AM–5:00 PM** in that zone.
+4. If the zone is still unknown, leave it empty. Do not invent Pacific. `Asia/Kolkata`, `Asia/Calcutta`, and `Asia/Colombo` are the label IST only. The IANA name stays.
 
-`Engineer_Shift__c` picklist → zone label / IANA (conventional when Assembled cannot pick a city):
+`Engineer_Shift__c` picklist, when the code is one of these. An unknown code stays unresolved.
 
 | Picklist | Label | IANA |
 |---|---|---|
-| `PST` | AMER-PST | `America/Los_Angeles` |
-| `EST` | AMER-EST | `America/New_York` |
+| `PST` / `AMER-PST` | AMER-PST | `America/Los_Angeles` |
+| `EST` / `AMER-EST` | AMER-EST | `America/New_York` |
 | `IST` / `APAC-INDIA` | IST | `Asia/Kolkata` |
 | `JAPAN` | JP | `Asia/Tokyo` |
 | `APAC-ANZ` | APAC-ANZ | `Australia/Sydney` |
-| `EMEA` | EMEA | `Europe/London` unless Assembled snaps 8:00 AM–5:00 PM elsewhere |
-| `AMER-LATAM` | AMER-LATAM | `America/Sao_Paulo` unless Assembled snaps 8:00 AM–5:00 PM elsewhere |
+| `EMEA` | EMEA | `Europe/London` |
+| `AMER-LATAM` | AMER-LATAM | `America/Sao_Paulo` |
 
-**When Assembled has shift events**
-- Login / logout / lunch / chat come from those events.
-- Derive the zone the way **8:00 AM–5:00 PM local** fits those UTC instants (or the event’s IANA if present). That 8-to-5 window is how you choose the GEO — not a 6:00–10:59 morning band, not the laptop, not OrgCS User timezone.
-- **Compare** that derived GEO to `Engineer_Shift__c`.
-  - They agree → that zone, no drama.
-  - They disagree → **Assembled wins for today’s hours.** The User field can be stale, or they were borrowed to another GEO for a day. Print the Assembled clock. One quiet note only if it would actually confuse the day (`⚠️ Shift: Assembled looks AMER-EST · User record PST`) — omit when they match.
-- Do not throw away a live Assembled day because the User picklist says something else.
+Omni adherence stays on the Assembled block covering now. It does not use this clock.
 
-**When Assembled is empty or unreachable**
-- Fall back to `Engineer_Shift__c` using the table above. Plan clock = **8:00 AM–5:00 PM** in that zone. Stamp, for example: `📅 Shift 8:00 AM–5:00 PM PT · AMER-PST (User record; Assembled unread)`.
-- Never print the word `fallback`.
-
-**When both are missing**
-- `⚠️ Assembled unreachable — shift timezone unknown`. Deliver the rest of the brief without inventing AMER-PST or AMER-EST.
-
-**Intelligence, not a flowchart**
-- A one-off Assembled day that does not match `Engineer_Shift__c` is still that day’s shift (coverage, swap, WOC).
-- A User picklist of `PST` with Assembled that has mapped to Pacific all week is confirmation, not a second clock.
-- `AboutMe` “Working Hours 08:00 AM–05:00 PM (PST)” can support the same conclusion. It does not override live Assembled times.
-- OrgCS User timezone is **not** a third vote unless Assembled and `Engineer_Shift__c` are both empty.
-
-Print the label and a **12-hour** local clock **at the top of every brief** (SOD, Mid-Day, and End of Day) — in the header, never as the start of Follow-up due. Example: `📅 Shift 8:00 AM–5:00 PM PT · AMER-PST`. An IST-shift engineer sees IST hours and `IST`, not PT or ET.
+Print the label and a **12-hour** clock **at the top of every brief** — in the header, never as the start of Follow-up due. Example: `📅 Shift 8:00 AM–5:00 PM PT · AMER-PST`. An IST-shift engineer sees IST hours and `IST`. A night shift stays overnight. Never print the word `fallback`.
 
 If Assembled is unread for **today** but this engineer is on Slack WOC, use **8:00 AM–5:00 PM in the already-derived shift timezone** (from other Assembled days this cycle, or `Engineer_Shift__c`) on the Shift line only.
 

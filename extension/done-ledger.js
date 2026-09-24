@@ -33,7 +33,7 @@ function edpPackNewer(packed, have) {
   return false;
 }
 
-function edpPruneLedgerKeys(keys, nowMs) {
+function edpPruneLedgerKeys(keys, nowMs, tzname) {
   const now = Number(nowMs) || Date.now();
   const src = keys && typeof keys === "object" ? keys : {};
   const durableCut = now - EDP_DONE_MAX_AGE_MS;
@@ -43,6 +43,16 @@ function edpPruneLedgerKeys(keys, nowMs) {
     if (!k) return;
     let ms = Number(src[k]) || now;
     if (ms < 1e12) ms = ms * 1000;
+    if (/plan-new-cases/i.test(k)) {
+      let zone = String(tzname || "").trim();
+      if (!zone) {
+        try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (_) {}
+      }
+      const opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+      if (zone) opts.timeZone = zone;
+      const fmt = new Intl.DateTimeFormat("en-CA", opts);
+      if (fmt.format(new Date(ms)) !== fmt.format(new Date(now))) return;
+    }
     if (k.indexOf("id:") === 0) {
       if (ms < idCut) return;
     } else if (edpIsDurableDoneKey(k)) {
@@ -203,8 +213,8 @@ function edpWalkItems(data, fn) {
   });
 }
 
-function edpActiveKeys(ledger) {
-  const pruned = edpPruneLedgerKeys(ledger && ledger.keys, Date.now());
+function edpActiveKeys(ledger, tzname) {
+  const pruned = edpPruneLedgerKeys(ledger && ledger.keys, Date.now(), tzname);
   return new Set(Object.keys(pruned));
 }
 

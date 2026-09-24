@@ -439,7 +439,7 @@ def row_to_event(row: dict, tzname: str) -> dict | None:
 
 def gather_meta() -> tuple[dict, str]:
     mapping = {}
-    tzname = "America/Los_Angeles"
+    tzname = ""
     try:
         data = json.loads(open(GATHER_PATH, encoding="utf-8").read())
     except (OSError, json.JSONDecodeError):

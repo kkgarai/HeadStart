@@ -2181,12 +2181,15 @@
         var savedClock = localStorage.getItem(CLOCK_KEY);
         if (savedClock === "local" || savedClock === "shift") planClock = savedClock;
       } catch (eClock) {}
-      function shiftZone() { return data.timezone || "America/Los_Angeles"; }
+      function shiftZone() { return data.timezone || ""; }
       function localZone() {
-        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || shiftZone(); }
-        catch (e) { return shiftZone(); }
+        try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; }
+        catch (e) { return ""; }
       }
-      function viewZone() { return planClock === "local" ? localZone() : shiftZone(); }
+      function viewZone() {
+        if (planClock === "local") return localZone();
+        return shiftZone() || localZone();
+      }
       function askClockPayload() {
         return {
           clock: planClock,
@@ -2237,6 +2240,7 @@
       }
       function tzLabel(tz) {
         if (!tz) return "";
+        if (tz === "Asia/Kolkata" || tz === "Asia/Calcutta" || tz === "Asia/Colombo") return "IST";
         if (tz === shiftZone() && tzAbbrToken(data.timezoneShort)) return tzAbbrToken(data.timezoneShort);
         var generic = tzNameFromFmt(tz, "shortGeneric");
         var gTok = tzAbbrToken(generic);
@@ -2253,9 +2257,20 @@
       }
       announceClock();
       function partsInZone(date, tz) {
+        var zone = tz || localZone();
+        if (!zone) {
+          return {
+            y: date.getFullYear(),
+            mo: date.getMonth() + 1,
+            d: date.getDate(),
+            h: date.getHours(),
+            mi: date.getMinutes(),
+            s: date.getSeconds()
+          };
+        }
         var parts = { year: "", month: "", day: "", hour: "", minute: "", second: "" };
         new Intl.DateTimeFormat("en-US", {
-          timeZone: tz,
+          timeZone: zone,
           year: "numeric",
           month: "2-digit",
           day: "2-digit",
@@ -2446,7 +2461,7 @@
         return "https://calendar.google.com/calendar/render?action=TEMPLATE"
           + "&text=" + encodeURIComponent(title)
           + "&dates=" + (item.startStamp || "") + "/" + (item.endStamp || "")
-          + "&ctz=" + encodeURIComponent(data.timezone || "America/Los_Angeles")
+          + "&ctz=" + encodeURIComponent(data.timezone || shiftZone())
           + "&details=" + encodeURIComponent(prettyName(item.detail || ""));
       }
       function gtaskUrl(item) {
@@ -2529,7 +2544,7 @@
         var url = "https://calendar.google.com/calendar/render?action=TEMPLATE"
           + "&text=" + encodeURIComponent(text)
           + "&dates=" + (item.meetingStartStamp || "") + "/" + (item.meetingEndStamp || "")
-          + "&ctz=" + encodeURIComponent(data.timezone || "America/Los_Angeles")
+          + "&ctz=" + encodeURIComponent(data.timezone || shiftZone())
           + "&details=" + encodeURIComponent(meetingInviteBody(item));
         if (guests.length) url += "&add=" + encodeURIComponent(guests.join(","));
         return url;
@@ -2976,6 +2991,13 @@
           if (!k) return;
           var ms = Number(src[k]) || now;
           if (ms < 1e12) ms = ms * 1000;
+          if (/plan-new-cases/i.test(k)) {
+            var zone = shiftZone() || localZone();
+            var opts = { year: "numeric", month: "2-digit", day: "2-digit" };
+            if (zone) opts.timeZone = zone;
+            var fmt = new Intl.DateTimeFormat("en-CA", opts);
+            if (fmt.format(new Date(ms)) !== fmt.format(new Date(now))) return;
+          }
           if (k.indexOf("id:") === 0) {
             if (ms < idCut) return;
           } else if (isDurableDoneKey(k)) {
@@ -4990,8 +5012,11 @@
         else if (Array.isArray(raw.chronology) && raw.chronology.length) src = raw.chronology;
         else if (Array.isArray(raw.timeline) && raw.timeline.length) src = raw.timeline;
         if (src) {
-          var ordered = src.slice().sort(function (a, b) { return chronoMs(a) - chronoMs(b); });
-          return ordered.slice(-10).map(function (ev) {
+          var ordered = src.slice();
+          var anyTime = ordered.some(function (ev) { return chronoMs(ev) > 0; });
+          if (anyTime) ordered.sort(function (a, b) { return chronoMs(b) - chronoMs(a); });
+          else ordered.reverse();
+          return ordered.slice(0, 10).map(function (ev) {
             if (typeof ev === "string") {
               var line = peekClean(ev);
               var tm = line.match(/\b(\d{1,2}:\d{2}\s*[AP]M)\b/i);
@@ -5289,7 +5314,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            timezone: data.timezone || "America/Los_Angeles",
+            timezone: data.timezone || shiftZone(),
             shiftStart: data.shiftStart || "08:00",
             shiftEnd: data.shiftEnd || "17:00"
           })
@@ -5569,7 +5594,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            timezone: data.timezone || "America/Los_Angeles",
+            timezone: data.timezone || shiftZone(),
             shiftStart: data.shiftStart || "08:00",
             shiftEnd: data.shiftEnd || "17:00",
             importantEventIds: collectImportantEventIds()
@@ -5738,7 +5763,7 @@
           return;
         }
         setMsg(row, kind === "rsvp" ? "Sending RSVP…" : "Updating calendar…");
-        var payload = { eventId: item.eventId, timezone: data.timezone || "America/Los_Angeles" };
+        var payload = { eventId: item.eventId, timezone: data.timezone || shiftZone() };
         if (kind === "update") {
           payload.start = rfc3339(item.startStamp);
           payload.end = rfc3339(item.endStamp);

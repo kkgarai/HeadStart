@@ -18,8 +18,41 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None  # type: ignore
 
-LAPTOP_ZONES = {"Asia/Kolkata", "Asia/Calcutta", "Asia/Colombo"}
-PT_ZONE = "America/Los_Angeles"
+def local_zone_name() -> str:
+    """This computer's IANA zone. Never store this as the shift zone."""
+    try:
+        key = str(getattr(datetime.now().astimezone().tzinfo, "key", "") or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    try:
+        link = pathlib.Path("/etc/localtime").resolve()
+        parts = link.parts
+        if "zoneinfo" in parts and ZoneInfo is not None:
+            name = "/".join(parts[parts.index("zoneinfo") + 1 :])
+            if name:
+                ZoneInfo(name)
+                return name
+    except Exception:
+        pass
+    return ""
+
+
+def zoneinfo_or_local(name: str = ""):
+    """Datetime math only. An empty name is not stored as the shift zone."""
+    raw = str(name or "").strip()
+    if raw and ZoneInfo is not None:
+        try:
+            return ZoneInfo(raw)
+        except Exception:
+            pass
+    try:
+        return datetime.now().astimezone().tzinfo or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
 _TZ_FOLD = (
     ("PDT", "PT"),
     ("PST", "PT"),
@@ -32,6 +65,9 @@ _TZ_FOLD = (
 )
 
 
+_IST_ZONE_NAMES = {"Asia/Kolkata", "Asia/Calcutta", "Asia/Colombo"}
+
+
 def fold_tz_abbr(raw: object) -> str:
     """Fold DST abbreviations (PDT→PT). Not a city/zone pair."""
     token = str(raw or "").strip()
@@ -42,6 +78,13 @@ def fold_tz_abbr(raw: object) -> str:
         if upper == src:
             return dest
     return token
+
+
+def display_zone_short(zone_name: object, abbr: object = "") -> str:
+    """Label only. Asia/Kolkata, Asia/Calcutta, and Asia/Colombo read as IST. The zone is not changed."""
+    if str(zone_name or "").strip() in _IST_ZONE_NAMES:
+        return "IST"
+    return fold_tz_abbr(abbr)
 
 
 def fold_tz_in_text(text: object) -> str:
@@ -125,18 +168,8 @@ def sort_sections(data: dict) -> None:
 
 
 def fix_laptop_ist_clock(data: dict) -> None:
-    tz = str(data.get("timezone") or "").strip()
-    if tz not in LAPTOP_ZONES:
-        return
-    sh, sm = _hm(data.get("shiftStart"), (20, 30))
-    eh, em = _hm(data.get("shiftEnd"), (5, 30))
-    start_m = sh * 60 + sm
-    end_m = eh * 60 + em
-    overnight = start_m >= 18 * 60 and end_m <= 12 * 60
-    if overnight:
-        data["shiftStart"] = "08:00"
-        data["shiftEnd"] = "17:00"
-    data["timezone"] = PT_ZONE
+    """Night shifts stay as Assembled recorded them. Local and shift are display clocks."""
+    return
 
 
 def normalize_shift_hhmm(data: dict) -> None:
@@ -2046,26 +2079,27 @@ def stamp_clock(data: dict) -> None:
         data.pop("stamp", None)
         data.pop("generatedAt", None)
         return
-    tzname = str(data.get("timezone") or PT_ZONE).strip() or PT_ZONE
-    tz = None
-    if ZoneInfo is not None:
-        try:
-            tz = ZoneInfo(tzname)
-        except Exception:
-            tz = ZoneInfo(PT_ZONE)
-            data["timezone"] = PT_ZONE
-            tzname = PT_ZONE
+    incoming = str(data.get("timezone") or "").strip()
+    tzname = incoming
+    tz = zoneinfo_or_local(incoming)
     now = datetime.now(tz) if tz is not None else datetime.now()
-    data["timezone"] = tzname
-    short = fold_tz_abbr(now.tzname() or data.get("timezoneShort") or "")
-    if short:
-        data["timezoneShort"] = short
+    if incoming:
+        data["timezone"] = incoming
+        if not str(data.get("timezoneShort") or "").strip():
+            if incoming in {"Asia/Kolkata", "Asia/Calcutta", "Asia/Colombo"}:
+                data["timezoneShort"] = "IST"
+            else:
+                short = fold_tz_abbr(now.tzname() or "")
+                if short:
+                    data["timezoneShort"] = short
     h12 = now.hour % 12 or 12
     ap = "AM" if now.hour < 12 else "PM"
     data["stamp"] = f"{now.strftime('%A')}, {now.strftime('%b')} {now.day} · {h12}:{now.minute:02d} {ap}"
     data["generatedAt"] = now.strftime("%Y%m%dT%H%M%S")
     sh, sm = _hm(data.get("shiftStart") or "08:00")
     eh, em = _hm(data.get("shiftEnd") or "17:00", (17, 0))
+    if not incoming:
+        return
     mins = now.hour * 60 + now.minute
     start = sh * 60 + sm
     end = eh * 60 + em
@@ -2387,6 +2421,67 @@ def stamp_case_our_updates(data: dict) -> None:
                     touch(it)
 
 
+def ensure_gus_bot_rows(data: dict) -> None:
+    """Every GUS Bot Work Notifier post is a GUS row, even with no Support Contact or Follow."""
+    if not isinstance(data, dict):
+        return
+    gather = _load_planner_gather()
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for src in (gather.get("slackCandidates"), data.get("slackCandidates")):
+        if not isinstance(src, list):
+            continue
+        for row in src:
+            if not isinstance(row, dict):
+                continue
+            blob = " ".join(
+                str(row.get(key) or "")
+                for key in ("label", "channel", "from", "peer", "detail", "openedClip")
+            )
+            if row.get("gusBot") is not True and not re.search(r"work notifier|gus bot", blob, re.I):
+                continue
+            ident = str(row.get("id") or row.get("ts") or row.get("slackUrl") or "")
+            if not ident or ident in seen:
+                continue
+            seen.add(ident)
+            rows.append(row)
+    if not rows:
+        return
+    sec = next(
+        (
+            s
+            for s in (data.get("sections") or [])
+            if isinstance(s, dict) and re.match(r"^gus\b", _section_key(s.get("title")), re.I)
+        ),
+        None,
+    )
+    if sec is None:
+        sec = {"title": "GUS", "open": True, "items": []}
+        data.setdefault("sections", []).append(sec)
+    have = {str(it.get("id") or "") for it in (sec.get("items") or []) if isinstance(it, dict)}
+    items = list(sec.get("items") or [])
+    for row in rows:
+        ident = "gusbot-" + re.sub(r"[^A-Za-z0-9._:-]", "", str(row.get("id") or row.get("ts") or ""))[:48]
+        if ident in have:
+            continue
+        note = str(row.get("openedClip") or row.get("label") or "").strip()
+        items.append(
+            {
+                "id": ident or "gusbot",
+                "kind": "gus",
+                "label": str(row.get("label") or "GUS Bot")[:180],
+                "detail": "GUS Bot",
+                "gusBot": True,
+                "slackUrl": row.get("slackUrl") or "",
+                "update": note[:500],
+            }
+        )
+        have.add(ident)
+    sec["items"] = items
+    if items:
+        sec.pop("empty", None)
+
+
 def ensure_lap_in_gus(data: dict) -> None:
     """GUS section keeps LAP rows from this run's candidates."""
     if not isinstance(data, dict):
@@ -2517,7 +2612,7 @@ def is_durable_done_key(key: str) -> bool:
     return str(key or "").startswith(DURABLE_DONE_PREFIXES)
 
 
-def prune_done_key_map(keys: object, now_ms: int | None = None) -> dict:
+def prune_done_key_map(keys: object, now_ms: int | None = None, tzname: str = "") -> dict:
     if not isinstance(keys, dict):
         return {}
     now = int(now_ms or (datetime.now().timestamp() * 1000))
@@ -2533,6 +2628,11 @@ def prune_done_key_map(keys: object, now_ms: int | None = None) -> dict:
         except (TypeError, ValueError):
             ts = now
         ms = int(ts if ts > 1e12 else ts * 1000)
+        if "plan-new-cases" in name.lower():
+            tz = zoneinfo_or_local(tzname)
+            marked = datetime.fromtimestamp(ms / 1000, tz).date()
+            if marked != datetime.fromtimestamp(now / 1000, tz).date():
+                continue
         if name.startswith("id:"):
             if ms < id_cut:
                 continue
@@ -2955,7 +3055,9 @@ def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | Non
         merged[k] = merged.get(k) or now_ms
     for k in undone:
         merged.pop(k, None)
-    merged = drop_google_done_keys(prune_done_key_map(merged, now_ms))
+    merged = drop_google_done_keys(
+        prune_done_key_map(merged, now_ms, str(data.get("timezone") or ""))
+    )
     for _sec, it in _walk_items(data):
         if _is_google_cal_row(it):
             it.pop("done", None)
@@ -3945,21 +4047,18 @@ def sync_queue_plan_blocks(data: dict) -> None:
 
 
 def _shift_window_today(data: dict) -> tuple[datetime, datetime]:
-    tzname = str(data.get("timezone") or PT_ZONE).strip() or PT_ZONE
-    tz = None
-    if ZoneInfo is not None:
-        try:
-            tz = ZoneInfo(tzname)
-        except Exception:
-            tz = ZoneInfo(PT_ZONE) if ZoneInfo else None
+    tzname = str(data.get("timezone") or "").strip()
+    tz = zoneinfo_or_local(tzname)
     now = datetime.now(tz) if tz is not None else datetime.now()
     day = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
-    sh, sm = _hm(str(data.get("shiftStart") or "08:00"), (8, 0))
-    eh, em = _hm(str(data.get("shiftEnd") or "17:00"), (17, 0))
+    start_raw = str(data.get("shiftStart") or "").strip()
+    end_raw = str(data.get("shiftEnd") or "").strip()
+    sh, sm = _hm(start_raw, (8, 0) if tzname else (0, 0)) if start_raw or tzname else (0, 0)
+    eh, em = _hm(end_raw, (17, 0) if tzname else (0, 0)) if end_raw or tzname else (0, 0)
     start = day.replace(hour=sh, minute=sm)
     end = day.replace(hour=eh, minute=em)
     if end <= start:
-        end = start + timedelta(hours=9)
+        end = end + timedelta(days=1)
     return start, end
 
 
@@ -4072,13 +4171,8 @@ def _round_up_5(when: datetime) -> datetime:
 def _plan_now_wall(data: dict, start: datetime, end: datetime, now: datetime | None = None) -> datetime:
     """Earliest slot for incomplete work. Past is only for completed blocks."""
     if now is None:
-        tzname = str((data or {}).get("timezone") or PT_ZONE).strip() or PT_ZONE
-        tz = None
-        if ZoneInfo is not None:
-            try:
-                tz = ZoneInfo(tzname)
-            except Exception:
-                tz = ZoneInfo(PT_ZONE) if ZoneInfo else None
+        tzname = str((data or {}).get("timezone") or "").strip()
+        tz = zoneinfo_or_local(tzname)
         now = datetime.now(tz) if tz is not None else datetime.now()
     if getattr(now, "tzinfo", None) is not None:
         now = now.replace(tzinfo=None)
@@ -4815,6 +4909,7 @@ def sanitize(data: dict) -> dict:
     organize_plan(data)
     split_bunched_cases(data)
     stamp_case_our_updates(data)
+    ensure_gus_bot_rows(data)
     ensure_lap_in_gus(data)
     hoist_peek_fields(data)
     apply_ai_case_buckets(data)
