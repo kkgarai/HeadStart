@@ -3362,7 +3362,7 @@ def _parse_slack_search(
     text: str, data: dict | None = None, *, keep_bots: bool = False, involved_user: str = ""
 ) -> list[dict]:
     rows = []
-    body = _slack_search_body(text)
+    body = _slack_search_body((text or "").replace("\\/", "/"))
     chunks = re.split(r"(?=### Result \d+)", body or "")
     for chunk in chunks:
         if "Channel:" not in chunk and "Permalink:" not in chunk:
@@ -3833,13 +3833,27 @@ def fill_slack_leftovers(data: dict) -> None:
         _slack_search_args(f"<@{me}> after:{after}", unread=True, mentions=True),
         _slack_search_args(f"is:thread <@{me}> after:{after}", unread=True, mentions=True),
     )
-    gus_bot = _slack_search_args(f"is:dm Work Notifier after:{after}")
-    gus_bot["include_bots"] = True
-    gus_bot["channel_types"] = "im"
-    gus_bot["query"] = f"is:dm Work Notifier after:{after}"
-    gus_bot["filters"] = gus_bot["query"]
-    gus_bot["_keep_bots"] = True
-    gus_bot["_gus_bot"] = True
+    def gus_notice_query(name: str) -> dict:
+        """GUS Bot (Work Notifier) and GUS Chatter both post in a DM."""
+        args = _slack_search_args(f"after:{after}")
+        args["include_bots"] = True
+        args["channel_types"] = "im"
+        args["keywords"] = [f'"{name}"']
+        args["filters"] = f"is:dm after:{after}"
+        args["query"] = name
+        args["natural_language_query"] = ""
+        args["_keep_bots"] = True
+        args["_gus_bot"] = True
+        return args
+
+    gus_queries = (
+        gus_notice_query("GUS Bot"),
+        gus_notice_query("Work Notifier"),
+        gus_notice_query("GUS Chatter"),
+    )
+    gus_work = gus_notice_query("W-")
+    gus_work["keywords"] = ["W-"]
+    gus_work["_gus_bot"] = False
     case_sla = _slack_search_args(f"\"15 Minute SLA Warning\" after:{after}", mentions=True)
     case_sla["include_bots"] = True
     case_sla["query"] = f"\"15 Minute SLA Warning\" after:{after}"
@@ -3857,7 +3871,8 @@ def fill_slack_leftovers(data: dict) -> None:
         _slack_search_args(f"is:dm after:{after}"),
         _slack_search_args(f"<@{me}> after:{after}", mentions=True),
         _slack_search_args(f"is:thread <@{me}> after:{after}", mentions=True),
-        gus_bot,
+        *gus_queries,
+        gus_work,
         case_sla,
         psbot,
         authored,
@@ -3874,14 +3889,18 @@ def fill_slack_leftovers(data: dict) -> None:
         for item in _parse_slack_search(
             text, data, keep_bots=keep_bots, involved_user="" if keep_bots else me
         ):
-            if gus_bot:
+            notice = " ".join(
+                str(item.get(key) or "") for key in ("from", "label", "snippet", "channel")
+            )
+            if gus_bot or re.search(r"gus chatter|gus bot|work notifier", notice, re.I):
                 item["gusBot"] = True
             if authored_threads:
                 cid0 = str(item.get("channelId") or "")
                 channel0 = str(item.get("channel") or "")
                 if cid0.startswith("D") or re.search(r"\bDM\b", channel0, re.I):
                     continue
-            sanit.stamp_slack_dm_label(item, data)
+            if not item.get("gusBot"):
+                sanit.stamp_slack_dm_label(item, data)
             cid = str(item.get("channelId") or "")
             ts = str(item.get("threadTs") or item.get("ts") or "")
             if cid.startswith("D"):
@@ -3893,6 +3912,8 @@ def fill_slack_leftovers(data: dict) -> None:
             if not key:
                 continue
             if key in seen:
+                if gus_bot:
+                    seen[key]["gusBot"] = True
                 if unread:
                     seen[key]["unread"] = True
                 continue
@@ -4039,8 +4060,9 @@ def _done_inbox_keys() -> set:
 
 
 def write_planner_inbox_txt(slack: list, mail: list) -> None:
-    slack_rows = [row for row in (slack or []) if _inbox_still_open(row)]
-    mail_rows = [row for row in (mail or []) if _inbox_still_open(row)]
+    done_keys = _done_inbox_keys()
+    slack_rows = [row for row in (slack or []) if not row.get("gusBot") and _inbox_still_open(row, done_keys)]
+    mail_rows = [row for row in (mail or []) if _inbox_still_open(row, done_keys)]
 
     def slack_block(row: dict, n: int) -> str:
         lines = [f"## slack {row.get('id') or ''}", f"- label: {row.get('label') or ''}", f"- peer: {row.get('peer') or ''}"]
@@ -4499,7 +4521,7 @@ def evidence_from_seed(seeded: dict) -> dict:
         return out
     done_inbox = _done_inbox_keys()
     slack = [
-        _slim_cand(row, ("id", "kind", "label", "slackUrl", "channelId", "channel", "sev1Case", "swarmCase", "ts", "threadTs", "unread", "opened", "openedClip", "from", "peer", "done", "lastHumanIsMe", "lastHuman", "reactions"))
+        _slim_cand(row, ("id", "kind", "label", "slackUrl", "channelId", "channel", "sev1Case", "swarmCase", "ts", "threadTs", "unread", "opened", "openedClip", "from", "peer", "done", "lastHumanIsMe", "lastHuman", "reactions", "gusBot", "snippet"))
         for row in (seeded.get("slackCandidates") or [])
         if _inbox_still_open(row, done_inbox)
     ]
@@ -5129,6 +5151,8 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
     except Exception:
         done_inbox = set()
     for row in gather.get("slackCandidates") or []:
+        if row.get("gusBot") is True:
+            continue
         if not _inbox_still_open(row, done_inbox):
             continue
         if row.get("lastHumanIsMe") is True and not row.get("sev1Case") and not row.get("swarmCase"):
@@ -12437,6 +12461,7 @@ class Handler(BaseHTTPRequestHandler):
                     save_done_ledger_from_data(payload)
                     sanit = _sanitize_mod()
                     sanit.apply_persisted_done(payload, None, load_done_ledger())
+                    sanit.omit_done_inbox_rows(payload)
                     sanit.drop_done_from_plan(payload)
                 except Exception:
                     pass

@@ -550,7 +550,7 @@ def slack_dm_peer(item: dict, data: dict | None) -> str:
 
 def stamp_slack_dm_label(item: dict, data: dict | None) -> None:
     """Title a DM with the counterpart. Search From is often this engineer."""
-    if not isinstance(item, dict) or not is_slack_dm(item):
+    if not isinstance(item, dict) or item.get("gusBot") is True or not is_slack_dm(item):
         return
     peer = slack_dm_peer(item, data)
     snippet = _dm_label_snippet(item)
@@ -2253,7 +2253,7 @@ def _load_planner_gather() -> dict:
 
 
 def _is_human_slack_leftover(row: object) -> bool:
-    if not isinstance(row, dict) or row.get("done") is True:
+    if not isinstance(row, dict) or row.get("done") is True or row.get("gusBot") is True:
         return False
     if row.get("lastHumanIsMe") is True:
         return False
@@ -2438,7 +2438,9 @@ def ensure_gus_bot_rows(data: dict) -> None:
                 str(row.get(key) or "")
                 for key in ("label", "channel", "from", "peer", "detail", "openedClip")
             )
-            if row.get("gusBot") is not True and not re.search(r"work notifier|gus bot", blob, re.I):
+            if row.get("gusBot") is not True and not re.search(
+                r"work notifier|gus bot|gus chatter|chatter feed", blob, re.I
+            ):
                 continue
             ident = str(row.get("id") or row.get("ts") or row.get("slackUrl") or "")
             if not ident or ident in seen:
@@ -2464,15 +2466,31 @@ def ensure_gus_bot_rows(data: dict) -> None:
         ident = "gusbot-" + re.sub(r"[^A-Za-z0-9._:-]", "", str(row.get("id") or row.get("ts") or ""))[:48]
         if ident in have:
             continue
-        note = str(row.get("openedClip") or row.get("label") or "").strip()
+        note = str(row.get("openedClip") or row.get("snippet") or row.get("label") or "").strip()
+        who = str(row.get("from") or "")
+        source = "GUS Chatter" if re.search(r"gus chatter|chatter feed", f"{who} {note}", re.I) else "GUS Bot"
+        work = re.search(r"\bW-\d+\b", note)
+        said = re.search(r"\bsaid:\s*(.+)", note, re.I)
+        title = work.group(0) if work else source
+        said_text = re.sub(r"\s+", " ", said.group(1)).strip()[:120] if said else ""
+        note_text = re.sub(r"\s+", " ", note).strip()[:120]
+        if said_text:
+            title = f"{title} — {said_text}"
+        elif note_text and note_text != title:
+            title = f"{title} — {note_text}"
+        gus_url = ""
+        link = re.search(r"https://gus\.(?:my|lightning)\.salesforce\.com/\S+", note, re.I)
+        if link:
+            gus_url = re.split(r"[|\s>]", link.group(0), maxsplit=1)[0].rstrip(").,>")
         items.append(
             {
                 "id": ident or "gusbot",
                 "kind": "gus",
-                "label": str(row.get("label") or "GUS Bot")[:180],
-                "detail": "GUS Bot",
+                "label": title[:180],
+                "detail": source,
                 "gusBot": True,
                 "slackUrl": row.get("slackUrl") or "",
+                "gusUrl": gus_url,
                 "update": note[:500],
             }
         )
@@ -4930,4 +4948,6 @@ def sanitize(data: dict) -> dict:
     drop_empty_optional_sections(data)
     apply_notepad(data)
     sort_sections(data)
+    omit_done_inbox_rows(data)
+    ensure_gus_bot_rows(data)
     return data

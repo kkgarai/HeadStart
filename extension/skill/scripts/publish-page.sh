@@ -319,6 +319,8 @@ try:
             ident_path.write_text(json.dumps(blob) + "\n", encoding="utf-8")
 except Exception:
     pass
+sanitize.ensure_gus_bot_rows(data)
+sanitize.omit_done_inbox_rows(data)
 sanitize.ensure_required_sections(data)
 sanitize.drop_empty_optional_sections(data)
 sanitize.relabel_slack_dms(data)
