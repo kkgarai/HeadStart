@@ -9979,6 +9979,38 @@ def set_plan_force_model(model_id: str) -> None:
     PLAN_FORCE_MODEL = (model_id or "").strip()
 
 
+def _model_needs_adaptive_thinking(model: str) -> bool:
+    """Sonnet 5 rejects thinking.type.enabled. It wants adaptive plus output_config.effort."""
+    return "sonnet-5" in (model or "").lower()
+
+
+def _prepare_gateway_message(payload: dict) -> None:
+    forced = plan_force_model()
+    if forced:
+        payload["model"] = forced
+    model = str(payload.get("model") or "")
+    if _model_needs_adaptive_thinking(model):
+        effort = "medium"
+        current = payload.get("output_config")
+        if isinstance(current, dict) and str(current.get("effort") or "").strip():
+            effort = str(current.get("effort")).strip()
+        payload["thinking"] = {"type": "adaptive"}
+        payload["output_config"] = {"effort": effort}
+        extra = payload.get("extra_body")
+        if isinstance(extra, dict):
+            extra.pop("thinking", None)
+            extra.pop("reasoning", None)
+        return
+    if not forced:
+        return
+    for key in ("thinking", "reasoning", "reasoning_effort", "reasoningEffort", "output_config"):
+        payload.pop(key, None)
+    extra = payload.get("extra_body")
+    if isinstance(extra, dict):
+        extra.pop("reasoning", None)
+        extra.pop("thinking", None)
+
+
 def plan_force_model() -> str:
     """Pin Express inference to this run only. After publish, the global model pick can change."""
     if not PLAN_ACTIVE.is_set():
@@ -12627,22 +12659,8 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 payload = None
             if isinstance(payload, dict) and path.rstrip("/").endswith("messages"):
-                forced = plan_force_model()
-                if forced:
-                    payload["model"] = forced
-                    for key in (
-                        "thinking",
-                        "reasoning",
-                        "reasoning_effort",
-                        "reasoningEffort",
-                        "output_config",
-                    ):
-                        payload.pop(key, None)
-                    extra = payload.get("extra_body")
-                    if isinstance(extra, dict):
-                        extra.pop("reasoning", None)
-                        extra.pop("thinking", None)
-                    raw = json.dumps(payload).encode("utf-8")
+                _prepare_gateway_message(payload)
+                raw = json.dumps(payload).encode("utf-8")
         headers = {}
         for key in (
             "x-api-key",
