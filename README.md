@@ -1,6 +1,6 @@
 # Day Planner
 
-Chrome extension for an engineer’s shift. Version **0.2.0.4 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.0.5 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 

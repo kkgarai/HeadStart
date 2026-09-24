@@ -1064,9 +1064,33 @@ async function checkExtensionUpdate() {
   }
 }
 
+async function stopRunningModel() {
+  const stored = await chrome.storage.local.get(["bridgeUrl"]);
+  const urls = [];
+  if (stored.bridgeUrl) urls.push(String(stored.bridgeUrl).replace(/\/$/, ""));
+  for (let port = PORT_START; port <= PORT_END; port++) urls.push("http://127.0.0.1:" + port);
+  const seen = {};
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    if (!url || seen[url]) continue;
+    seen[url] = true;
+    try {
+      const body = await readPlannerHealth(url, 400);
+      if (!body) continue;
+      await fetch(url + "/plan/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(8000)
+      });
+    } catch (_) {}
+  }
+}
+
 async function applyExtensionUpdate() {
   if (!chrome.runtime.sendNativeMessage) return { ok: false, error: "Native messaging is not available." };
   try {
+    await stopRunningModel();
     const res = await chrome.runtime.sendNativeMessage(NATIVE_HOST, {
       cmd: "update-apply",
       version: extensionVersion()
