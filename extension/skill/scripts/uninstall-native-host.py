@@ -60,22 +60,21 @@ def health(port: int) -> dict | None:
     return data
 
 
+def under_runs(path: pathlib.Path) -> bool:
+    try:
+        path.resolve().relative_to((support_dir() / "runs").resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def should_stop(root: str, skill: pathlib.Path) -> bool:
     if not root:
         return False
     heard = pathlib.Path(root)
-    if same_path(heard, skill):
+    if same_path(heard, skill) or same_path(heard, read_note("run-skill.txt")):
         return True
-    noted_skill = read_note("extension-skill.txt")
-    if not same_path(noted_skill, skill):
-        return False
-    if same_path(heard, read_note("run-skill.txt")):
-        return True
-    try:
-        heard.resolve().relative_to((support_dir() / "runs").resolve())
-    except (OSError, ValueError):
-        return False
-    return True
+    return under_runs(heard)
 
 
 def stop_our_bridges(skill: pathlib.Path) -> int:
@@ -226,9 +225,16 @@ def cache_dir() -> pathlib.Path:
     return root / "engineer-day-planner"
 
 
+def unlock(path: pathlib.Path) -> None:
+    if sys.platform != "darwin" or not path.exists():
+        return
+    subprocess.run(["chflags", "-R", "nouchg", str(path)], capture_output=True, text=True)
+
+
 def remove_tree(path: pathlib.Path) -> None:
     if not path.exists():
         return
+    unlock(path)
     shutil.rmtree(path, ignore_errors=True)
     if path.exists():
         print(f"Could not remove {path}", file=sys.stderr)
@@ -248,9 +254,6 @@ def remove_file(path: pathlib.Path) -> None:
 
 def remove_owned_files(skill: pathlib.Path) -> None:
     """Drop every file this install wrote outside the clone."""
-    noted_skill = read_note("extension-skill.txt")
-    if not same_path(noted_skill, skill):
-        return
     remove_tree(support_dir() / "runs")
     remove_tree(cache_dir())
     for name in (
