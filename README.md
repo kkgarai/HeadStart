@@ -1,6 +1,6 @@
 # Day Planner
 
-Chrome extension for an engineer’s shift. Version **0.2.0.9 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.1.0 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
@@ -17,37 +17,56 @@ cd day-planner
 
 1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `day-planner` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
 
-2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose that folder.
-
-3. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer:
-
-| This computer | Double-click |
-|---|---|
-| Mac | `Install Mac.command` |
-| Windows | `Install Windows.bat` |
-| Linux | `Install Linux.sh` |
-
-The page lists all three and marks the one for the computer you are on.
-
-On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once.
-
-4. Return to Chrome and click the toolbar icon again. The page asks for the Express token, the model, and the runner.
+2. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer. The page lists all three and marks the one for this computer.
 
 Do the double-click once per machine. After that, the toolbar starts the bridge. Quitting Chrome does not ask for the installer again.
 
 If the bridge has stopped, the page sends you back to that folder to double-click the same installer.
 
+3. Return to Chrome and click the toolbar icon again. The page asks for the Express token, the model, and the runner.
+
+### What the installer does
+
+The installer registers a small local helper so the toolbar can start the planner bridge. It does not install Python, Claude Code, or any login.
+
+| This computer | Double-click | What it runs |
+|---|---|---|
+| Mac | `Install Mac.command` | `python3 extension/skill/scripts/install-native-host.py` |
+| Windows | `Install Windows.bat` | `py -3`, or `python`, or `python3`, on `extension\skill\scripts\install-native-host.py` |
+| Linux | `Install Linux.sh` | `python3 extension/skill/scripts/install-native-host.py` |
+
+On every platform that helper:
+
+- Registers the native host for Chrome, Chrome Beta, Chrome Dev, Chrome Canary, Chromium, Edge, Brave, and Vivaldi where that browser is installed.
+- On Windows, also writes the native-host registry keys Chrome uses.
+- On a Mac, writes a login helper that does not keep the bridge running after you quit Chrome.
+- If this folder is on the Desktop, in Documents, or in Downloads, copies the bridge to a local snapshot so Chrome is allowed to start it.
+- Records the GitHub branch this clone follows, so **Update** can see a newer version even when Chrome cannot read those folders.
+
+On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Install Linux.sh"`) and double-click it again, or run it from a terminal.
+
+Python 3 has to be on the machine already. The Windows file looks for `py -3`, then `python`, then `python3`.
+
 ## Uninstall the host
 
-Double-click the uninstaller in that same folder. It stops this copy's bridge and removes the native host, its snapshots, and its cache. Then open `chrome://extensions` and remove Engineer Day Planner.
+Double-click the uninstaller in that same folder. Then open `chrome://extensions` and remove Engineer Day Planner. The uninstaller does not delete the cloned folder, and it does not remove the extension from Chrome.
 
-| This computer | Double-click |
-|---|---|
-| Mac | `Uninstall Mac.command` |
-| Windows | `Uninstall Windows.bat` |
-| Linux | `Uninstall Linux.sh` |
+| This computer | Double-click | What it runs |
+|---|---|---|
+| Mac | `Uninstall Mac.command` | `python3 extension/skill/scripts/uninstall-native-host.py` |
+| Windows | `Uninstall Windows.bat` | `py -3`, or `python`, or `python3`, on `extension\skill\scripts\uninstall-native-host.py` |
+| Linux | `Uninstall Linux.sh` | `python3 extension/skill/scripts/uninstall-native-host.py` |
 
-This host name is shared with any other Engineer Day Planner loaded on the same Mac. After uninstall, that other copy needs its installer again.
+On every platform that helper:
+
+- Stops the bridge only when it belongs to this copy.
+- Removes the native-host registration for the same browsers the installer wrote.
+- On Windows, removes those registry keys.
+- On a Mac, removes the login helper.
+- Removes the host program, the version snapshots, and the cache.
+- Leaves the cloned folder and your Done marks in that folder.
+
+This host name is shared with any other Engineer Day Planner on the same computer. After uninstall, that other copy needs its installer again.
 
 ## Update
 

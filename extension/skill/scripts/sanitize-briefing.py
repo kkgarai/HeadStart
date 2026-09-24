@@ -2850,10 +2850,30 @@ def stamp_items_done_from_ledger(items: list, extra: dict | None = None, data: d
             it["done"] = True
 
 
+def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
+    """A Slack or Mail row already marked Done. Case Done does not hide a different message."""
+    if not isinstance(it, dict):
+        return False
+    if it.get("done") is True:
+        return True
+    keys = keys or set()
+    if not keys:
+        return False
+    if _item_slack_dms(it) & _ledger_slack_dms(keys):
+        return True
+    if _item_mail_ids(it) & _ledger_mail_ids(keys):
+        return True
+    for key in item_done_keys(it):
+        if key.startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-")) and key in keys:
+            return True
+    return False
+
+
 def omit_done_inbox_rows(data: dict) -> None:
     """Slack/Mail already Done stay off the leftover lists. Cases stay on the board."""
     if not isinstance(data, dict):
         return
+    keys = collect_done_keys(data)
     for sec in data.get("sections") or []:
         if not isinstance(sec, dict):
             continue
@@ -2866,11 +2886,7 @@ def omit_done_inbox_rows(data: dict) -> None:
             continue
 
         def keep(it: object) -> bool:
-            if not isinstance(it, dict):
-                return False
-            if it.get("done") is False:
-                return True
-            return it.get("done") is not True
+            return isinstance(it, dict) and not inbox_row_is_done(it, keys)
 
         for g in sec.get("groups") or []:
             if isinstance(g, dict):
@@ -2916,7 +2932,11 @@ def drop_google_done_keys(keys: dict) -> dict:
 
 
 def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | None = None) -> None:
-    undone = undone_item_keys(data)
+    undone = {
+        key
+        for key in undone_item_keys(data)
+        if not str(key).startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-"))
+    }
     keys = collect_done_keys(data)
     if isinstance(prev, dict):
         keys |= collect_done_keys(prev)

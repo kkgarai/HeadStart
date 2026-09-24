@@ -26,10 +26,16 @@
     <p class="lead">One page for this shift, from now until logout. A run takes 10–15 minutes.</p>
     <h2>How to get started</h2>
     <ol>
-      <li>Click the toolbar icon. The planner tab opens.</li>
-      <li>Paste your token once, then click Run Planner.</li>
-      <li>Run it at the start of the shift, again mid-day, and again before logout. Each run picks up from now. Done stays done.</li>
+      <li>Load this folder in Chrome. It is the folder with <code>manifest.json</code>.</li>
+      <li>Double-click the installer for this computer once: <code>Install Mac.command</code>, <code>Install Windows.bat</code>, or <code>Install Linux.sh</code>. That registers the local bridge. After that, the toolbar starts it.</li>
+      <li>Click the toolbar icon. Paste your token once, then click Run Planner.</li>
+      <li>Run it at the start of the shift, again mid-day, and again before logout. Each run picks up from now.</li>
     </ol>
+    <h2>Update and uninstall</h2>
+    <ul>
+      <li><strong>Update</strong> appears on the planner bar when a newer version is on the GitHub branch this copy follows. Click it. The extension reloads from that version. Done marks stay.</li>
+      <li><strong>Uninstall</strong> is a file in the same folder, not a button on the page: <code>Uninstall Mac.command</code>, <code>Uninstall Windows.bat</code>, or <code>Uninstall Linux.sh</code>. It stops this copy's bridge and removes the host, its snapshots, and its cache. Then remove Engineer Day Planner in <code>chrome://extensions</code>. The cloned folder stays.</li>
+    </ul>
     <h2>What is on the page</h2>
     <ul>
       <li><strong>Needs us now</strong> — burning work. High urgency, the customer is blocked, and the next step is ours.</li>
@@ -37,7 +43,7 @@
       <li><strong>Still watching</strong> — peek only. Not due a follow-up.</li>
       <li><strong>Quick wins</strong> — under a few minutes. Batch these first.</li>
       <li><strong>GUS</strong> — investigations you follow or own as Support Contact, plus LAP on your cases.</li>
-      <li><strong>Slack and Mail</strong> — what still needs your reply.</li>
+      <li><strong>Slack and Mail</strong> — what still needs your reply. Mark one Done and the next run leaves it off the page.</li>
       <li><strong>Customer asked for a meeting</strong> — they asked to meet, in a comment or an email.</li>
       <li><strong>Today's plan</strong> — the shift in time, through logout. Open time is the dotted gap.</li>
       <li><strong>Before you log off</strong> — a close you already promised for today.</li>

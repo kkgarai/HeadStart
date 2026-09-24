@@ -3965,9 +3965,28 @@ def ensure_slack_link(row: dict) -> str:
     return url
 
 
+def _inbox_still_open(row: dict, keys: set | None = None) -> bool:
+    """A Slack or Mail row marked Done stays out of the next run."""
+    if not isinstance(row, dict) or row.get("done") is True:
+        return False
+    if not keys:
+        return True
+    try:
+        return not _sanitize_mod().inbox_row_is_done(row, keys)
+    except Exception:
+        return True
+
+
+def _done_inbox_keys() -> set:
+    try:
+        return _sanitize_mod()._ledger_keys(load_done_ledger())
+    except Exception:
+        return set()
+
+
 def write_planner_inbox_txt(slack: list, mail: list) -> None:
-    slack_rows = [row for row in (slack or []) if isinstance(row, dict)]
-    mail_rows = [row for row in (mail or []) if isinstance(row, dict)]
+    slack_rows = [row for row in (slack or []) if _inbox_still_open(row)]
+    mail_rows = [row for row in (mail or []) if _inbox_still_open(row)]
 
     def slack_block(row: dict, n: int) -> str:
         lines = [f"## slack {row.get('id') or ''}", f"- label: {row.get('label') or ''}", f"- peer: {row.get('peer') or ''}"]
@@ -4424,15 +4443,16 @@ def evidence_from_seed(seeded: dict) -> dict:
                 continue
             out[k] = val
         return out
+    done_inbox = _done_inbox_keys()
     slack = [
         _slim_cand(row, ("id", "kind", "label", "slackUrl", "channelId", "channel", "sev1Case", "swarmCase", "ts", "threadTs", "unread", "opened", "openedClip", "from", "peer", "done", "lastHumanIsMe", "lastHuman", "reactions"))
         for row in (seeded.get("slackCandidates") or [])
-        if isinstance(row, dict)
+        if _inbox_still_open(row, done_inbox)
     ]
     mail = [
         _slim_cand(row, ("id", "kind", "label", "mailUrl", "from", "messageId", "unread", "opened", "openedClip", "snippet", "done"))
         for row in (seeded.get("mailCandidates") or [])
-        if isinstance(row, dict)
+        if _inbox_still_open(row, done_inbox)
     ]
     try:
         write_planner_inbox_txt(slack, mail)
@@ -5039,8 +5059,13 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
     """Keep opened leftovers on the page when the model never classified them."""
     slack_unread: list[dict] = []
     slack_reply: list[dict] = []
+    done_inbox = set()
+    try:
+        done_inbox = _sanitize_mod()._ledger_keys(load_done_ledger())
+    except Exception:
+        done_inbox = set()
     for row in gather.get("slackCandidates") or []:
-        if not isinstance(row, dict) or row.get("done") is True:
+        if not _inbox_still_open(row, done_inbox):
             continue
         if row.get("lastHumanIsMe") is True and not row.get("sev1Case") and not row.get("swarmCase"):
             continue
@@ -5066,7 +5091,7 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
             slack_reply.append(item)
     mail_unread: list[dict] = []
     for row in gather.get("mailCandidates") or []:
-        if not isinstance(row, dict) or row.get("done") is True:
+        if not _inbox_still_open(row, done_inbox):
             continue
         mail_unread.append(
             {
@@ -12698,9 +12723,11 @@ def write_windows_native_host_registry(manifest_path: pathlib.Path) -> None:
         "Software\\Google\\Chrome\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
         "Software\\Google\\Chrome Beta\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
         "Software\\Google\\Chrome Dev\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
+        "Software\\Google\\Chrome SxS\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
         "Software\\Chromium\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
         "Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
         "Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
+        "Software\\Vivaldi\\NativeMessagingHosts\\" + NATIVE_HOST_NAME,
     )
     value = str(manifest_path)
     for hive in hives:

@@ -166,9 +166,11 @@ def remove_windows_registry() -> None:
         "Software\\Google\\Chrome\\NativeMessagingHosts\\" + HOST_NAME,
         "Software\\Google\\Chrome Beta\\NativeMessagingHosts\\" + HOST_NAME,
         "Software\\Google\\Chrome Dev\\NativeMessagingHosts\\" + HOST_NAME,
+        "Software\\Google\\Chrome SxS\\NativeMessagingHosts\\" + HOST_NAME,
         "Software\\Chromium\\NativeMessagingHosts\\" + HOST_NAME,
         "Software\\Microsoft\\Edge\\NativeMessagingHosts\\" + HOST_NAME,
         "Software\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\" + HOST_NAME,
+        "Software\\Vivaldi\\NativeMessagingHosts\\" + HOST_NAME,
     )
     for hive in hives:
         try:
