@@ -474,7 +474,7 @@ async function startDxGusAuth() {
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not start the GUS sign-in");
     setTokenMsg(body.message || "Finish the GUS sign-in in the browser, then this list refreshes.");
-    setTimeout(loadMcps, 8000);
+    setTimeout(loadMcps, body.already ? 300 : 8000);
   } catch (err) {
     setTokenMsg(err && err.message ? err.message : "Could not start the GUS sign-in");
   }
@@ -505,7 +505,7 @@ async function startDxGoogleAuth() {
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not start the Google sign-in");
     setTokenMsg(body.message || "Finish the Google sign-in in the browser, then this list refreshes.");
-    setTimeout(loadMcps, 8000);
+    setTimeout(loadMcps, body.already ? 300 : 8000);
   } catch (err) {
     setTokenMsg(err && err.message ? err.message : "Could not start the Google sign-in");
   } finally {

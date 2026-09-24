@@ -1258,9 +1258,10 @@ def _decode_chunked(body: bytes) -> bytes:
 def aisuite_manager_servers() -> dict[str, str]:
     """Same server list the AI Suite app shows. status connected means that login is already done."""
     sock_path = HOME / ".aisuite" / "manager.sock"
-    auth = aisuite_authorization()
-    if not auth or not sock_path.exists():
+    if not sock_path.exists():
         return {}
+    auth = aisuite_authorization()
+    header = ("Authorization: %s\r\n" % auth) if auth else ""
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(4)
@@ -1269,8 +1270,8 @@ def aisuite_manager_servers() -> dict[str, str]:
             "GET /api/mcp/servers HTTP/1.1\r\n"
             "Host: localhost\r\n"
             "Connection: close\r\n"
-            "Authorization: %s\r\n"
-            "Accept: application/json\r\n\r\n" % auth
+            "%s"
+            "Accept: application/json\r\n\r\n" % header
         )
         sock.sendall(req.encode("utf-8"))
         chunks: list[bytes] = []
@@ -1568,12 +1569,32 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
 
 
 def begin_google_sign_in() -> dict:
+    """Use the AI Suite Google session when it is already there. Otherwise open one page."""
+    if aisuite_server_connected(aisuite_manager_servers(), "google-workspace"):
+        return {
+            "ok": True,
+            "already": True,
+            "started": False,
+            "message": "Google is already connected in AI Suite.",
+        }
     return begin_provider_sign_in(
         "google-workspace-rw",
         "google-workspace-rw",
         ".dx-google-auth.log",
         "Google",
     )
+
+
+def begin_gus_sign_in() -> dict:
+    """Use the AI Suite or Salesforce CLI GUS session. Otherwise open one page."""
+    if aisuite_gus_connected(aisuite_manager_servers()) or sf_gus_connected():
+        return {
+            "ok": True,
+            "already": True,
+            "started": False,
+            "message": "GUS is already connected.",
+        }
+    return begin_provider_sign_in("gus", "gus", ".dx-gus-auth.log", "GUS")
 
 
 def start_dx_google_auth(*, user_clicked: bool = False) -> None:
@@ -12841,7 +12862,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(403, {"error": "local only"})
                 return
             try:
-                self._json(200, begin_provider_sign_in("gus", "gus", ".dx-gus-auth.log", "GUS"))
+                self._json(200, begin_gus_sign_in())
             except Exception as exc:
                 self._json(502, {"error": str(exc) or "could not start the GUS sign-in"})
                 return
