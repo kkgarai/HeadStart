@@ -4483,21 +4483,21 @@ def evidence_from_seed(seeded: dict) -> dict:
             meetings = []
             append_plan_step(kind="log", label="Primary calendar fetch failed · " + seeded["calendarFetchError"])
     clock = _gather_plan_clock(seeded, meetings)
-    if seeded.get("slackFetchOk") is not True:
-        try:
-            fill_slack_leftovers(seeded)
-        except Exception as exc:
-            seeded["slackFetchOk"] = False
-            seeded["slackFetchError"] = clip(str(exc), 180)
-            append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
-    if seeded.get("mailFetchOk") is not True and not seeded.get("_mailFetchTried"):
-        seeded["_mailFetchTried"] = True
-        try:
-            fill_mail_leftovers(seeded)
-        except Exception as exc:
-            seeded["mailFetchOk"] = False
-            seeded["mailFetchError"] = clip(str(exc), 180)
-            append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
+    forget_prior_fetches(seeded)
+    try:
+        fill_slack_leftovers(seeded)
+    except Exception as exc:
+        seeded["slackFetchOk"] = False
+        seeded["slackFetchError"] = clip(str(exc), 180)
+        seeded["slackCandidates"] = []
+        append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
+    try:
+        fill_mail_leftovers(seeded)
+    except Exception as exc:
+        seeded["mailFetchOk"] = False
+        seeded["mailFetchError"] = clip(str(exc), 180)
+        seeded["mailCandidates"] = []
+        append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
     def _slim_cand(row: dict, keys: tuple[str, ...]) -> dict:
         out = {}
         for k in keys:
@@ -4776,7 +4776,7 @@ def seed_plan_from_live() -> dict:
         _sanitize_mod().stamp_clock(data)
     except Exception:
         pass
-    repair_plan_payload(data, refresh_inbox=True, wipe_peek_summary=True)
+    repair_plan_payload(data, refresh_inbox=False, wipe_peek_summary=True)
     apply_identity_cache(data)
     try:
         fetch_orgcs_identity(data)
@@ -4784,6 +4784,7 @@ def seed_plan_from_live() -> dict:
         pass
     persist_identity(data)
     apply_live_assembled(data)
+    forget_prior_fetches(data)
     data["todayPlan"] = []
     data["aiAnalyzed"] = False
     data["inboxReviewed"] = False
@@ -4800,6 +4801,28 @@ def seed_plan_from_live() -> dict:
             and not str(it.get("id") or "").startswith("plan-")
         ]
     return data
+
+
+def forget_prior_fetches(data: dict) -> None:
+    """A previous plan's fetch flags are not this run. Search Slack, Mail, and GUS again.
+
+    Done marks stay in the ledger. Fresh hits are still dropped when they match it.
+    """
+    if not isinstance(data, dict):
+        return
+    for key in (
+        "slackFetchOk",
+        "slackFetchError",
+        "slackCandidates",
+        "mailFetchOk",
+        "mailFetchError",
+        "mailCandidates",
+        "_mailFetchTried",
+        "gusFetchOk",
+        "gusFetchError",
+        "gusCandidates",
+    ):
+        data.pop(key, None)
 
 
 def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
