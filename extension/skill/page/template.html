@@ -3495,6 +3495,7 @@
       function canPeek(item) {
         if (!item || !item.id || item.kind === "break" || item.autoBreak) return false;
         var k = String(item.kind || "").toLowerCase();
+        if (item.gusBot === true) return false;
         if (k === "meeting" || k === "assembled" || k === "slack" || k === "mail" || k === "invite" || k === "fyi") return false;
         if (item.eventId || item.htmlLink || item.invite === true) return false;
         return k === "case" || k === "gus" || !!(item.caseUrl || item.gusUrl || item.workId || item.caseNumber);
@@ -3887,6 +3888,16 @@
         if (/named a time/.test(t)) return "Schedule this slot, then Refresh Calendar.";
         return "";
       }
+      function plainGus(text) {
+        return String(text || "")
+          .replace(/\\n/g, " ")
+          .replace(/\\u00a0/gi, " ")
+          .replace(/\u00a0/g, " ")
+          .replace(/<https?:\/\/[^|>]+\|([^>]+)>/gi, "$1")
+          .replace(/<https?:\/\/[^>]+>/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
       function punchline(text) {
         var s = String(text || "").replace(/\/case-gho/gi, "GEO handover").replace(/\s+/g, " ").trim();
         if (s.length <= 140) return s;
@@ -3957,7 +3968,8 @@
         if (!when) {
           when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
         }
-        var labelText = prettyName(isPlan ? String(item.label || "").replace(/\/case-gho/gi, "GEO handover") : punchline(item.label));
+        var rawLabel = item.gusBot ? plainGus(item.label) : item.label;
+        var labelText = prettyName(isPlan ? String(rawLabel || "").replace(/\/case-gho/gi, "GEO handover") : punchline(rawLabel));
         if (/before you log off/i.test(labelText)) {
           var caseBit = String(item.caseNumber || "").replace(/\D/g, "");
           labelText = caseBit ? "#" + caseBit : labelText;
@@ -3972,7 +3984,7 @@
         if (isMailRow(item, sec) && mailHref) {
           lab = '<a href="' + esc(mailHref) + '" target="_blank" rel="noopener">' + lab + "</a>";
         }
-        var detailSrc = String(item.detail || "")
+        var detailSrc = String(item.gusBot ? plainGus(item.detail) : (item.detail || ""))
           .replace(/\s*·?\s*Last (?:update|activity)\s+[^·]*/i, "")
           .replace(/\s*·?\s*(?:No update yet|New case)\s*$/i, "")
           .replace(/(?:\s*·\s*){2,}/g, " · ")

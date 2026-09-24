@@ -2421,6 +2421,62 @@ def stamp_case_our_updates(data: dict) -> None:
                     touch(it)
 
 
+def _plain_gus_text(text: str) -> str:
+    """Slack dumps, literal \\n, and non-breaking spaces become one readable line."""
+    s = str(text or "")
+    s = s.replace("\\/", "/")
+    s = re.sub(r"\\n", "\n", s)
+    s = re.sub(r"\\u00a0", " ", s, flags=re.I)
+    s = s.replace("\u00a0", " ").replace("&nbsp;", " ").replace("\xa0", " ")
+    s = re.sub(r"<https?://[^|>\s]+\|([^>]+)>", r"\1", s, flags=re.I)
+    s = re.sub(r"<https?://[^>]+>", " ", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip(" -–—")
+
+
+def _gus_notice_copy(note: str, who: str = "") -> tuple[str, str, str]:
+    """(label, detail, gus url). Label is the bot. Detail is one sentence plus the case number."""
+    original = str(note or "").replace("\\/", "/")
+    links = re.findall(r"https://gus\.(?:my|lightning)\.salesforce\.com/[A-Za-z0-9]+", original, re.I)
+    work_links = [url for url in links if re.search(r"/a07", url, re.I)]
+    gus_url = (work_links or links or [""])[0]
+    raw = _plain_gus_text(original)
+    blob = f"{who} {raw}"
+    source = "GUS Chatter" if re.search(r"gus chatter|chatter feed", blob, re.I) else "GUS Bot"
+    work = re.search(r"\bW-\d+\b", raw)
+    case = re.search(r"OrgCS Case No\.?\s*#?\s*(\d{5,})", raw, re.I)
+    said = re.search(r"\bsaid:\s*(.+?)(?:\s+Case Details\b|$)", raw, re.I)
+    sentence = ""
+    if said:
+        sentence = re.split(r"(?<=\.)\s", said.group(1).strip())[0].strip(" .")
+    elif raw and not re.fullmatch(r"gus (chatter|bot)|work notifier", raw, re.I):
+        sentence = re.split(r"(?<=\.)\s", raw)[0].strip(" .")
+        sentence = re.sub(r"^(GUS Chatter|GUS Bot|Work Notifier)\s*[-–—:]\s*", "", sentence, flags=re.I)
+    label = f"{source} · {work.group(0)}" if work else source
+    bits = []
+    if sentence:
+        bits.append(sentence if sentence.endswith(".") else sentence + ".")
+    if case:
+        bits.append(f"OrgCS #{case.group(1)}.")
+    detail = " ".join(bits) or source
+    return label[:140], detail[:220], gus_url
+
+
+def _gus_slack_url(row: dict) -> str:
+    for key in ("slackUrl", "slackPermalink", "permalink"):
+        url = str(row.get(key) or "").strip()
+        if "slack.com" in url.lower():
+            return url.replace("\\/", "/")
+    cid = str(row.get("channelId") or "")
+    ts = str(row.get("ts") or row.get("threadTs") or "")
+    if re.match(r"^[DGC][A-Z0-9]+$", cid, re.I):
+        if re.match(r"^\d{10}\.\d+$", ts):
+            return f"https://salesforce.enterprise.slack.com/archives/{cid}/p{ts.replace('.', '')}"
+        return f"https://salesforce.enterprise.slack.com/archives/{cid}"
+    return ""
+
+
 def ensure_gus_bot_rows(data: dict) -> None:
     """Every GUS Bot Work Notifier post is a GUS row, even with no Support Contact or Follow."""
     if not isinstance(data, dict):
@@ -2462,36 +2518,60 @@ def ensure_gus_bot_rows(data: dict) -> None:
         data.setdefault("sections", []).append(sec)
     have = {str(it.get("id") or "") for it in (sec.get("items") or []) if isinstance(it, dict)}
     items = list(sec.get("items") or [])
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        blob = " ".join(str(it.get(key) or "") for key in ("label", "detail", "update", "from"))
+        if it.get("gusBot") is not True and not re.search(
+            r"gus chatter|gus bot|work notifier|\\n|\\u00a0", blob, re.I
+        ):
+            continue
+        label, detail, gus_url = _gus_notice_copy(blob, str(it.get("from") or ""))
+        it["label"] = label
+        it["detail"] = detail
+        it["gusBot"] = True
+        it.pop("update", None)
+        slack_url = _gus_slack_url(it)
+        if slack_url:
+            it["slackUrl"] = slack_url
+        if gus_url and not it.get("gusUrl"):
+            it["gusUrl"] = gus_url
     for row in rows:
         ident = "gusbot-" + re.sub(r"[^A-Za-z0-9._:-]", "", str(row.get("id") or row.get("ts") or ""))[:48]
         if ident in have:
             continue
-        note = str(row.get("openedClip") or row.get("snippet") or row.get("label") or "").strip()
-        who = str(row.get("from") or "")
-        source = "GUS Chatter" if re.search(r"gus chatter|chatter feed", f"{who} {note}", re.I) else "GUS Bot"
-        work = re.search(r"\bW-\d+\b", note)
-        said = re.search(r"\bsaid:\s*(.+)", note, re.I)
-        title = work.group(0) if work else source
-        said_text = re.sub(r"\s+", " ", said.group(1)).strip()[:120] if said else ""
-        note_text = re.sub(r"\s+", " ", note).strip()[:120]
-        if said_text:
-            title = f"{title} — {said_text}"
-        elif note_text and note_text != title:
-            title = f"{title} — {note_text}"
-        gus_url = ""
-        link = re.search(r"https://gus\.(?:my|lightning)\.salesforce\.com/\S+", note, re.I)
-        if link:
-            gus_url = re.split(r"[|\s>]", link.group(0), maxsplit=1)[0].rstrip(").,>")
+        note = " ".join(
+            str(row.get(key) or "")
+            for key in ("openedClip", "snippet", "label", "detail", "update")
+        )
+        label, detail, gus_url = _gus_notice_copy(note, str(row.get("from") or ""))
+        slack_url = _gus_slack_url(row)
+        twin = next(
+            (
+                it
+                for it in items
+                if isinstance(it, dict) and (it.get("detail") == detail or it.get("label") == label)
+            ),
+            None,
+        )
+        if twin is not None:
+            if slack_url:
+                twin["slackUrl"] = slack_url
+            if gus_url and not twin.get("gusUrl"):
+                twin["gusUrl"] = gus_url
+            if "W-" in label and "W-" not in str(twin.get("label") or ""):
+                twin["label"] = label
+            twin["gusBot"] = True
+            continue
         items.append(
             {
                 "id": ident or "gusbot",
                 "kind": "gus",
-                "label": title[:180],
-                "detail": source,
+                "label": label,
+                "detail": detail,
                 "gusBot": True,
-                "slackUrl": row.get("slackUrl") or "",
+                "slackUrl": slack_url,
                 "gusUrl": gus_url,
-                "update": note[:500],
             }
         )
         have.add(ident)
