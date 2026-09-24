@@ -39,7 +39,7 @@ const OMNI_KIND_TOKENS = {
 const OMNI_WORK_KINDS = { casework: true, chat: true, messaging: true, voice: true };
 const OMNI_MEAL_KINDS = { lunch: true, break: true };
 const OMNI_ACK_LABEL = "Got It";
-const PAGE_URL = chrome.runtime.getURL("panel.html");
+const PAGE_URL = chrome.runtime.getURL("extension/panel.html");
 
 function ensureAlarms() {
   chrome.alarms.create(ALARM_SYNC, { periodInMinutes: 1 });
@@ -256,25 +256,25 @@ function hostLooksMissing(message) {
 
 const PACK_FILES = [
   "manifest.json",
-  "panel.html",
-  "panel.js",
-  "panel.css",
-  "background.js",
-  "content.js",
-  "done-ledger.js",
-  "welcome.html",
-  "skill/SKILL.md",
-  "skill/page/template.html",
-  "skill/scripts/FETCH_SYSTEM.md",
-  "skill/scripts/PLAN_SYSTEM.md",
-  "skill/scripts/calendar-bridge.py",
-  "skill/scripts/edp-native-host-main.py",
-  "skill/scripts/edp-native-host.py",
-  "skill/scripts/install-native-host.py",
-  "skill/scripts/publish-page.sh",
-  "skill/scripts/sanitize-briefing.py",
-  "skill/scripts/self-check-plan.py",
-  "skill/scripts/slim-tool-result.py"
+  "extension/panel.html",
+  "extension/panel.js",
+  "extension/panel.css",
+  "extension/background.js",
+  "extension/content.js",
+  "extension/done-ledger.js",
+  "extension/welcome.html",
+  "extension/skill/SKILL.md",
+  "extension/skill/page/template.html",
+  "extension/skill/scripts/FETCH_SYSTEM.md",
+  "extension/skill/scripts/PLAN_SYSTEM.md",
+  "extension/skill/scripts/calendar-bridge.py",
+  "extension/skill/scripts/edp-native-host-main.py",
+  "extension/skill/scripts/edp-native-host.py",
+  "extension/skill/scripts/install-native-host.py",
+  "extension/skill/scripts/publish-page.sh",
+  "extension/skill/scripts/sanitize-briefing.py",
+  "extension/skill/scripts/self-check-plan.py",
+  "extension/skill/scripts/slim-tool-result.py"
 ];
 
 async function loadedExtensionFiles() {

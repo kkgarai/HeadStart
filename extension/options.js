@@ -147,7 +147,7 @@ async function bridgeBase() {
       const have = String((chrome.runtime.getManifest() || {}).version || "");
       if (packed && have && packNewerThanHave(packed, have)) {
         const tabs = await chrome.tabs.query({});
-        const page = chrome.runtime.getURL("panel.html");
+        const page = chrome.runtime.getURL("extension/panel.html");
         const busy = (tabs || []).some((tab) => String((tab && tab.url) || "").indexOf(page) === 0);
         if (!busy) chrome.runtime.reload();
       }

@@ -4,7 +4,7 @@
 Chrome cannot write NativeMessagingHosts from the extension. Run this once,
 by file path, from the folder you loaded:
 
-    python3 skill/scripts/install-native-host.py
+    python3 extension/skill/scripts/install-native-host.py
 
 After that, the toolbar starts the bridge. Quitting Chrome does not require
 this command again.
@@ -44,7 +44,10 @@ def is_packed_extension_skill(path: pathlib.Path) -> bool:
     ).is_file():
         return False
     parent = resolved.parent
-    return (parent / "manifest.json").is_file() and (parent / "panel.html").is_file()
+    if not (parent / "panel.html").is_file():
+        return False
+    root = parent if (parent / "manifest.json").is_file() else parent.parent
+    return (root / "manifest.json").is_file()
 
 
 def as_skill(path: pathlib.Path) -> pathlib.Path | None:
@@ -54,9 +57,9 @@ def as_skill(path: pathlib.Path) -> pathlib.Path | None:
         return None
     if is_packed_extension_skill(p):
         return p.resolve()
-    nested = p / "skill"
-    if is_packed_extension_skill(nested):
-        return nested.resolve()
+    for nested in (p / "skill", p / "extension" / "skill"):
+        if is_packed_extension_skill(nested):
+            return nested.resolve()
     return None
 
 
@@ -234,6 +237,8 @@ def snapshot_extension(skill: pathlib.Path) -> pathlib.Path:
     """Copy this extension aside without removing the copy a previous version is using."""
     version = "0"
     manifest = skill.parent / "manifest.json"
+    if not manifest.is_file():
+        manifest = skill.parent.parent / "manifest.json"
     if manifest.is_file():
         try:
             version = str(json.loads(manifest.read_text(encoding="utf-8")).get("version") or "0")

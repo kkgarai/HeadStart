@@ -6,7 +6,23 @@ This folder is the skill packed inside the Chrome extension at `skill/`. Recipie
 
 **Chrome extension (recipients)**
 
-Load unpacked the parent extension folder, or install from the Chrome Web Store. First machine, once: double-click `Install Mac.command`, `Install Windows.bat`, or `Install Linux.sh` in that folder. After that, the toolbar starts the bridge. The skill is already packed as `skill/`. Do not also copy it into a skills directory.
+Clone the repository, then load the folder that contains `manifest.json`. That folder is the clone root, not this `skill/` folder and not `extension/`.
+
+```bash
+git clone https://github.com/kkgarai/day-planner.git
+cd day-planner
+```
+
+Enterprise copy, for people who already have access:
+
+```bash
+git clone https://github.com/kgarai_sfemu/day-planner.git
+cd day-planner
+```
+
+In Chrome, `chrome://extensions` → Developer mode → **Load unpacked** → choose `day-planner`. First machine, once: double-click `Install Mac.command`, `Install Windows.bat`, or `Install Linux.sh` in that folder. After that, the toolbar starts the bridge. Do not copy this folder into a skills directory.
+
+To remove the host, double-click `Uninstall Mac.command`, `Uninstall Windows.bat`, or `Uninstall Linux.sh` in that same folder, then remove the extension in `chrome://extensions`.
 
 **AI CLI without the extension**
 

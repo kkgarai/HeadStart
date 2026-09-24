@@ -57,7 +57,10 @@ def is_packed_extension_skill(path: pathlib.Path) -> bool:
     if not (p / "SKILL.md").is_file() or not (p / "scripts" / "calendar-bridge.py").is_file():
         return False
     parent = p.parent
-    return (parent / "manifest.json").is_file() and (parent / "panel.html").is_file()
+    if not (parent / "panel.html").is_file():
+        return False
+    root = parent if (parent / "manifest.json").is_file() else parent.parent
+    return (root / "manifest.json").is_file()
 
 
 def as_skill(path: pathlib.Path) -> pathlib.Path | None:
@@ -67,9 +70,9 @@ def as_skill(path: pathlib.Path) -> pathlib.Path | None:
         return None
     if is_packed_extension_skill(p):
         return p.resolve()
-    nested = p / "skill"
-    if is_packed_extension_skill(nested):
-        return nested.resolve()
+    for nested in (p / "skill", p / "extension" / "skill"):
+        if is_packed_extension_skill(nested):
+            return nested.resolve()
     return None
 
 
@@ -246,6 +249,8 @@ PROCESS_VERSION = ""
 
 def packed_extension_version() -> str:
     path = SKILL_ROOT.parent / "manifest.json"
+    if not path.is_file():
+        path = SKILL_ROOT.parent.parent / "manifest.json"
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -13049,6 +13054,8 @@ def write_adopted_skill(version: str, files: list) -> pathlib.Path:
         if not isinstance(item, dict):
             continue
         rel = str(item.get("path") or "").replace("\\", "/").lstrip("/")
+        if rel.startswith("extension/"):
+            rel = rel[len("extension/") :]
         parts = pathlib.PurePosixPath(rel).parts
         if not rel or ".." in parts:
             continue

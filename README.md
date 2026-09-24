@@ -8,7 +8,21 @@ Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.
 
 ## Install
 
-1. Clone this repository. The folder you clone is the folder Chrome loads. It must contain `manifest.json` and the three installers.
+Clone the public repository, then load that folder in Chrome. The folder contains `manifest.json`, the three installers, and an `extension` folder with the rest of the files.
+
+```bash
+git clone https://github.com/kkgarai/day-planner.git
+cd day-planner
+```
+
+The enterprise copy, for people who already have access:
+
+```bash
+git clone https://github.com/kgarai_sfemu/day-planner.git
+cd day-planner
+```
+
+1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `day-planner` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
 
 2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose that folder.
 
@@ -29,6 +43,18 @@ On a Mac, the first double-click can be blocked until you right-click the file a
 Do the double-click once per machine. After that, the toolbar starts the bridge. Quitting Chrome does not ask for the installer again.
 
 If the bridge has stopped, the page sends you back to that folder to double-click the same installer.
+
+## Uninstall the host
+
+Double-click the uninstaller in that same folder. It removes the native host and stops the bridge that belongs to this copy. Then open `chrome://extensions` and remove Engineer Day Planner.
+
+| This computer | Double-click |
+|---|---|
+| Mac | `Uninstall Mac.command` |
+| Windows | `Uninstall Windows.bat` |
+| Linux | `Uninstall Linux.sh` |
+
+This host name is shared with any other Engineer Day Planner loaded on the same Mac. After uninstall, that other copy needs its installer again.
 
 ## Update
 

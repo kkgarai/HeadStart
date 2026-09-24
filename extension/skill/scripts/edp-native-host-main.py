@@ -63,7 +63,10 @@ def is_packed_extension_skill(path: pathlib.Path) -> bool:
     ).is_file():
         return False
     parent = resolved.parent
-    return (parent / "manifest.json").is_file() and (parent / "panel.html").is_file()
+    if not (parent / "panel.html").is_file():
+        return False
+    root = parent if (parent / "manifest.json").is_file() else parent.parent
+    return (root / "manifest.json").is_file()
 
 
 def as_skill(path: pathlib.Path) -> pathlib.Path | None:
@@ -73,9 +76,9 @@ def as_skill(path: pathlib.Path) -> pathlib.Path | None:
         return None
     if is_packed_extension_skill(p):
         return p.resolve()
-    nested = p / "skill"
-    if is_packed_extension_skill(nested):
-        return nested.resolve()
+    for nested in (p / "skill", p / "extension" / "skill"):
+        if is_packed_extension_skill(nested):
+            return nested.resolve()
     return None
 
 
@@ -88,7 +91,8 @@ def rec_enabled(rec: dict) -> bool:
 
 def packed_version_tuple(skill: pathlib.Path) -> tuple[int, ...]:
     try:
-        data = json.loads((skill.parent / "manifest.json").read_text(encoding="utf-8"))
+        root = skill.parent if (skill.parent / "manifest.json").is_file() else skill.parent.parent
+        data = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
         parts = str((data or {}).get("version") or "0").split(".")
         return tuple(int(p) if str(p).isdigit() else 0 for p in parts[:6])
     except Exception:
@@ -289,6 +293,8 @@ def snapshot_skill(skill: pathlib.Path) -> pathlib.Path:
     """Copy a protected folder aside so Chrome can run it from any location."""
     version = "0"
     manifest = skill.parent / "manifest.json"
+    if not manifest.is_file():
+        manifest = skill.parent.parent / "manifest.json"
     if manifest.is_file():
         try:
             version = str(json.loads(manifest.read_text(encoding="utf-8")).get("version") or "0")
@@ -436,6 +442,8 @@ def stage_root(version: str) -> pathlib.Path:
 
 def _safe_parts(rel: str) -> tuple[str, ...] | None:
     text = str(rel or "").replace("\\", "/").lstrip("/")
+    if text.startswith("extension/"):
+        text = text[len("extension/") :]
     parts = pathlib.PurePosixPath(text).parts
     if not text or ".." in parts:
         return None
@@ -498,7 +506,7 @@ def loaded_git_root(requested: str) -> pathlib.Path | None:
     want = version_tuple(requested)
     matches: list[pathlib.Path] = []
     for skill in browser_skill_roots():
-        root = skill.parent
+        root = skill.parent if (skill.parent / ".git").exists() else skill.parent.parent
         if not (root / ".git").exists() or not (root / "manifest.json").is_file():
             continue
         matches.append(root)

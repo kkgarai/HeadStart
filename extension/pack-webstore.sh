@@ -3,7 +3,7 @@
 # developer dashboard so the ID stays ojpfakkcgmefanbomdfpglbioapoabfh).
 # Does not upload. Excludes .git, bytecode, and generated skill/out files.
 set -euo pipefail
-ROOT="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/edp-webstore.XXXXXX")"
 cleanup() { rm -rf "$STAGE"; }
 trap cleanup EXIT

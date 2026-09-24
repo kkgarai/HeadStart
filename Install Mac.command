@@ -1,6 +1,6 @@
 #!/bin/bash
 cd "$(dirname "$0")" || exit 1
-python3 skill/scripts/install-native-host.py
+python3 extension/skill/scripts/install-native-host.py
 status=$?
 echo
 if [ "$status" -eq 0 ]; then

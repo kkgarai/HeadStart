@@ -157,24 +157,29 @@ function refreshOpenPage() {
   return false;
 }
 
-function installFileName() {
+function osKind() {
   const plat = navigator.platform || "";
   const ua = navigator.userAgent || "";
-  if (/Win/i.test(plat) || /Windows/i.test(ua)) return "Install Windows.bat";
-  if (/Linux/i.test(plat) || /Linux/i.test(ua)) return "Install Linux.sh";
-  return "Install Mac.command";
+  if (/Win/i.test(plat) || /Windows/i.test(ua)) return "windows";
+  if (/Linux/i.test(plat) || /Linux/i.test(ua)) return "linux";
+  return "mac";
 }
 
 function fillMissHelp() {
-  const file = installFileName();
-  const list = document.getElementById("miss-installers");
-  if (!list) return;
-  list.querySelectorAll("li").forEach((li) => {
-    const label = li.getAttribute("data-label") || "";
-    const here = li.getAttribute("data-file") === file;
-    li.textContent = here ? label + " — this computer" : label;
-    if (here) li.setAttribute("data-here", "1");
-    else li.removeAttribute("data-here");
+  const os = osKind();
+  ["miss-installers", "miss-uninstallers"].forEach((id) => {
+    const list = document.getElementById(id);
+    if (!list) return;
+    list.querySelectorAll("li").forEach((li) => {
+      const label = li.getAttribute("data-label") || "";
+      const file = li.getAttribute("data-file") || "";
+      const here = (os === "windows" && /Windows/.test(file))
+        || (os === "linux" && /Linux/.test(file))
+        || (os === "mac" && /Mac/.test(file));
+      li.textContent = here ? label + " — this computer" : label;
+      if (here) li.setAttribute("data-here", "1");
+      else li.removeAttribute("data-here");
+    });
   });
 }
 
@@ -186,7 +191,7 @@ function setMissNote(text) {
 
 async function saveNativeHelper() {
   try {
-    const url = chrome.runtime.getURL("skill/scripts/install-native-host.py");
+    const url = chrome.runtime.getURL("extension/skill/scripts/install-native-host.py");
     const resp = await fetch(url);
     if (!resp.ok) throw new Error("helper missing");
     const blob = await resp.blob();
@@ -200,7 +205,7 @@ async function saveNativeHelper() {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 4000);
     setMissNote("Saved. Run the command in Terminal, then click the toolbar icon again.");
   } catch (_) {
-    setMissNote("Save failed. From a Load unpacked folder, run python3 skill/scripts/install-native-host.py");
+    setMissNote("Save failed. From the folder you loaded, double-click Install Mac.command, Install Windows.bat, or Install Linux.sh.");
   }
 }
 
@@ -1366,7 +1371,7 @@ if (updateBtn) {
   const welcomed = await chrome.storage.local.get(["edpWelcomed"]);
   if (!welcomed.edpWelcomed) {
     await chrome.storage.local.set({ edpWelcomed: true });
-    chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") });
+    chrome.tabs.create({ url: chrome.runtime.getURL("extension/welcome.html") });
   }
   fillMissHelp();
   const stored = await chrome.storage.local.get(["gatewayToken", "planLogMode", "edpPlanClock", "edpViewZone", "edpViewShort"]);

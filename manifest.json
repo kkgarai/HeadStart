@@ -8,16 +8,16 @@
   "action": {
     "default_title": "Engineer Day Planner",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "16": "extension/icons/icon16.png",
+      "48": "extension/icons/icon48.png",
+      "128": "extension/icons/icon128.png"
     }
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "extension/background.js"
   },
   "options_ui": {
-    "page": "options.html",
+    "page": "extension/options.html",
     "open_in_tab": false
   },
   "permissions": [
@@ -109,14 +109,14 @@
         "http://127.0.0.1:8798/*",
         "http://127.0.0.1:8799/*"
       ],
-      "js": ["done-ledger.js", "content.js"],
+      "js": ["extension/done-ledger.js", "extension/content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
   ],
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "extension/icons/icon16.png",
+    "48": "extension/icons/icon48.png",
+    "128": "extension/icons/icon128.png"
   }
 }
