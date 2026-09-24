@@ -1,0 +1,6 @@
+# Never pack a published plan into the extension.
+out/
+skill/out/
+current.html
+*.snapshot.json
+briefing-data.json

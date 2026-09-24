@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engineer Day Planner</title>
+  <script>
+    (function () {
+      try {
+        document.documentElement.setAttribute(
+          "data-theme",
+          window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+        );
+      } catch (e) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="bar">
+    <button type="button" class="btn primary" id="run">Run Planner</button>
+    <button type="button" class="btn danger" id="stop" hidden>Stop Run</button>
+    <span class="status" id="status">Looking for the local bridge…</span>
+    <span class="spacer"></span>
+    <span class="ver" id="ext-version"></span>
+    <button type="button" class="btn" id="update-btn" hidden>Update</button>
+    <button type="button" class="btn" id="help-btn">Help</button>
+    <a class="btn" id="feedback-btn" href="https://docs.google.com/forms/d/e/1FAIpQLScCRaK2kKFbf2aemuGK9fvp1AkteYJ8-Xcrv87YVVPv7gV2Dw/viewform" target="_blank" rel="noopener">Feedback</a>
+    <button type="button" class="btn" id="steps-btn">Logs</button>
+    <button type="button" class="btn" id="reload">Reload</button>
+    <button type="button" class="btn" id="token">Token</button>
+  </header>
+  <div class="miss" id="miss" hidden>
+    <p id="miss-lead">Go to the folder you loaded in Chrome and double-click the installer for this computer.</p>
+    <ul class="miss-installers" id="miss-installers">
+      <li data-file="Install Mac.command" data-label="Install Mac.command — Mac"></li>
+      <li data-file="Install Windows.bat" data-label="Install Windows.bat — Windows"></li>
+      <li data-file="Install Linux.sh" data-label="Install Linux.sh — Linux"></li>
+    </ul>
+    <div id="miss-install">
+      <p>Do this once. After that, the toolbar icon starts the bridge.</p>
+    </div>
+    <div id="miss-again" hidden>
+      <p>The bridge stopped.</p>
+      <p class="miss-actions">
+        <button type="button" class="btn primary" id="miss-retry">Start bridge</button>
+      </p>
+      <p class="miss-note" id="miss-error"></p>
+    </div>
+    <p class="miss-note" id="miss-note" hidden></p>
+  </div>
+  <iframe id="frame" title="Planner" hidden></iframe>
+  <button type="button" class="ask-fab" id="ask-fab" aria-expanded="false" aria-controls="ask-dock" aria-label="Planner Buddy" hidden>
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 6.8A3.8 3.8 0 0 1 8.8 3h6.4A3.8 3.8 0 0 1 19 6.8v5.4A3.8 3.8 0 0 1 15.2 16H11l-4.2 3.2c-.7.5-1.8 0-1.8-.9V6.8Z" fill="#fffaf4"/>
+      <circle cx="9.2" cy="9.5" r="1.05" fill="#b4532a"/>
+      <circle cx="12" cy="9.5" r="1.05" fill="#b4532a"/>
+      <circle cx="14.8" cy="9.5" r="1.05" fill="#b4532a"/>
+    </svg>
+  </button>
+  <aside class="ask-dock" id="ask-dock" hidden>
+    <div class="ask-head">
+      <h2>Planner Buddy</h2>
+      <button type="button" class="btn" id="ask-close">Close</button>
+    </div>
+    <p class="ask-note">Ask in your own words — burning, next, a case, a draft, or mark Follow-up due / a plan row Done.</p>
+    <div class="ask-chips" id="ask-chips">
+      <button type="button" class="ask-chip" data-ask="What's burning?">Burning</button>
+      <button type="button" class="ask-chip" data-ask="What should I do next?">Next</button>
+      <button type="button" class="ask-chip" data-ask="What's waiting on me?">Waiting on me</button>
+      <button type="button" class="ask-chip" data-ask="What's waiting on the customer?">Waiting on them</button>
+      <button type="button" class="ask-chip" data-ask="What's on the clock this hour?">This hour</button>
+    </div>
+    <div class="ask-log" id="ask-log"></div>
+    <form class="ask-form" id="ask-form">
+      <input id="ask-q" maxlength="400" placeholder="Ask Planner Buddy…" autocomplete="off" aria-label="Question">
+      <button type="submit" class="btn primary" id="ask-send">Send</button>
+    </form>
+  </aside>
+  <aside class="steps-dock" id="steps-dock" hidden>
+    <div class="steps-head">
+      <h2 id="steps-title">Logs</h2>
+      <label class="sr" for="steps-mode">Log detail</label>
+      <select id="steps-mode" aria-label="Log detail">
+        <option value="off">Off</option>
+        <option value="compact">Compact</option>
+        <option value="verbose">Verbose</option>
+      </select>
+      <button type="button" class="btn" id="steps-copy">Copy</button>
+      <button type="button" class="btn" id="steps-close">Hide</button>
+    </div>
+    <p class="steps-note">Run logs for this session. Compact is the tool lines. Verbose adds the model text. Copy pastes them into an error report.</p>
+    <ol class="steps-log" id="steps-log"></ol>
+  </aside>
+  <div id="token-layer" class="token-layer" hidden>
+    <div class="token-card" role="dialog" aria-modal="true" aria-labelledby="token-title">
+      <h2 id="token-title">Express LLM Gateway</h2>
+      <p>Paste your gateway token. Pick a model. It stays in this Chrome profile and is sent only to the local planner bridge. Run Planner uses Claude Code.</p>
+      <label class="token-label" for="token-input">Token</label>
+      <input id="token-input" type="password" autocomplete="off" placeholder="Paste your token">
+      <label class="token-label" for="model-input">Model</label>
+      <select id="model-input" disabled>
+        <option value="">Save a token to load models</option>
+      </select>
+      <label class="token-label" for="runner-input" hidden>Runner</label>
+      <select id="runner-input" hidden disabled>
+        <option value="claude">Claude Code</option>
+      </select>
+      <p class="token-hint">One saved model for Run Planner and Planner Buddy. Change it anytime after a run — the last gather does not lock it. Bedrock, Vertex, Codex, and -1M routing aliases are hidden.</p>
+      <div class="mcp-head">
+        <p class="token-label">Planner MCPs</p>
+        <button type="button" class="btn mcp-refresh" id="mcp-refresh">Refresh</button>
+      </div>
+      <ul class="mcp-list" id="mcp-list">
+        <li class="mcp-checking">Checking…</li>
+      </ul>
+      <p class="token-msg" id="token-msg"></p>
+      <div class="token-actions">
+        <button type="button" class="btn primary" id="token-save">Save</button>
+        <button type="button" class="btn" id="token-devbar">Use DevBar</button>
+        <button type="button" class="btn" id="token-cancel" hidden>Cancel</button>
+      </div>
+    </div>
+  </div>
+  <script src="done-ledger.js"></script>
+  <script src="panel.js"></script>
+</body>
+</html>

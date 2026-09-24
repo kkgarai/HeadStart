@@ -1,0 +1,122 @@
+{
+  "manifest_version": 3,
+  "name": "Engineer Day Planner",
+  "version": "0.2.0.0",
+  "version_name": "0.2.0.0 beta",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy03mza6umnVhZ0/34zY3/gOlZA5IPwgICfygsTGJNae/6MxSGmMhtmhhZDGBaf8uPdZMlhwy7Cy1o3vISWtCb82s398pheYnkwNLYLyd8eQiHYLxtUMsT6x+Xec3x4YnH3qOSVUNLGXJNm57MTsy99EQfwB5CEeUSanR3oLzONTC46ziI1bsgm0KB4AqeRVgjyc+YO5jBA+T2JPajIlETJCawA2chBKZx/3pgAiiMImeGwwvJ4xKd4C7d2V0cBFy7RiuYewZ8z+87XLSAgrLIFwV/UScZw1/vraEERBp3esq/UlxHQGHk7TE75Xn3J4d1c7RdLcV2GAcKhDSG2E/hQIDAQAB",
+  "description": "Local planner page. Paste your Express LLM Gateway token and pick a model. Run Planner uses Claude Code. MCP stays on the Mac.",
+  "action": {
+    "default_title": "Engineer Day Planner",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "tabs",
+    "tabGroups",
+    "nativeMessaging",
+    "offscreen",
+    "cookies",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8765/*",
+    "http://127.0.0.1:8766/*",
+    "http://127.0.0.1:8767/*",
+    "http://127.0.0.1:8768/*",
+    "http://127.0.0.1:8769/*",
+    "http://127.0.0.1:8770/*",
+    "http://127.0.0.1:8771/*",
+    "http://127.0.0.1:8772/*",
+    "http://127.0.0.1:8773/*",
+    "http://127.0.0.1:8774/*",
+    "http://127.0.0.1:8775/*",
+    "http://127.0.0.1:8776/*",
+    "http://127.0.0.1:8777/*",
+    "http://127.0.0.1:8778/*",
+    "http://127.0.0.1:8779/*",
+    "http://127.0.0.1:8780/*",
+    "http://127.0.0.1:8781/*",
+    "http://127.0.0.1:8782/*",
+    "http://127.0.0.1:8783/*",
+    "http://127.0.0.1:8784/*",
+    "http://127.0.0.1:8785/*",
+    "http://127.0.0.1:8786/*",
+    "http://127.0.0.1:8787/*",
+    "http://127.0.0.1:8788/*",
+    "http://127.0.0.1:8789/*",
+    "http://127.0.0.1:8790/*",
+    "http://127.0.0.1:8791/*",
+    "http://127.0.0.1:8792/*",
+    "http://127.0.0.1:8793/*",
+    "http://127.0.0.1:8794/*",
+    "http://127.0.0.1:8795/*",
+    "http://127.0.0.1:8796/*",
+    "http://127.0.0.1:8797/*",
+    "http://127.0.0.1:8798/*",
+    "http://127.0.0.1:8799/*",
+    "https://orgcs.my.salesforce.com/*",
+    "https://orgcs.lightning.force.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1:8765/*",
+        "http://127.0.0.1:8766/*",
+        "http://127.0.0.1:8767/*",
+        "http://127.0.0.1:8768/*",
+        "http://127.0.0.1:8769/*",
+        "http://127.0.0.1:8770/*",
+        "http://127.0.0.1:8771/*",
+        "http://127.0.0.1:8772/*",
+        "http://127.0.0.1:8773/*",
+        "http://127.0.0.1:8774/*",
+        "http://127.0.0.1:8775/*",
+        "http://127.0.0.1:8776/*",
+        "http://127.0.0.1:8777/*",
+        "http://127.0.0.1:8778/*",
+        "http://127.0.0.1:8779/*",
+        "http://127.0.0.1:8780/*",
+        "http://127.0.0.1:8781/*",
+        "http://127.0.0.1:8782/*",
+        "http://127.0.0.1:8783/*",
+        "http://127.0.0.1:8784/*",
+        "http://127.0.0.1:8785/*",
+        "http://127.0.0.1:8786/*",
+        "http://127.0.0.1:8787/*",
+        "http://127.0.0.1:8788/*",
+        "http://127.0.0.1:8789/*",
+        "http://127.0.0.1:8790/*",
+        "http://127.0.0.1:8791/*",
+        "http://127.0.0.1:8792/*",
+        "http://127.0.0.1:8793/*",
+        "http://127.0.0.1:8794/*",
+        "http://127.0.0.1:8795/*",
+        "http://127.0.0.1:8796/*",
+        "http://127.0.0.1:8797/*",
+        "http://127.0.0.1:8798/*",
+        "http://127.0.0.1:8799/*"
+      ],
+      "js": ["done-ledger.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

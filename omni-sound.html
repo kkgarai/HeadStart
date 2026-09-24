@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Omni alert</title>
+</head>
+<body>
+<script>
+(function () {
+  var NAG_MS = 15000;
+  var timer = null;
+  var ctx = null;
+  function playOnce() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!ctx) ctx = new AC();
+      if (ctx.state === "suspended") ctx.resume();
+      function saw(freq, t0, dur, peak) {
+        var o = ctx.createOscillator();
+        var g = ctx.createGain();
+        o.type = "sawtooth";
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(peak, t0 + 0.03);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start(t0);
+        o.stop(t0 + dur + 0.02);
+      }
+      var now = ctx.currentTime;
+      [0, 0.85].forEach(function (off) {
+        saw(392, now + off, 0.22, 0.18);
+        saw(311, now + off + 0.2, 0.22, 0.16);
+        saw(247, now + off + 0.4, 0.28, 0.14);
+      });
+    } catch (e) {}
+  }
+  playOnce();
+  timer = setInterval(playOnce, NAG_MS);
+})();
+</script>
+</body>
+</html>
