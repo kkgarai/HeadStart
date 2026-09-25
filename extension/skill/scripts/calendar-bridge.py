@@ -6217,6 +6217,11 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             pass
         apply_live_assembled(data)
         data = apply_ai_overlay(data, started_epoch)
+        try:
+            fetch_orgcs_identity(data)
+        except Exception:
+            pass
+        apply_live_assembled(data)
         apply_general_shift_hours(data)
         prev = None
         try:
@@ -6348,6 +6353,10 @@ def repair_published_page() -> None:
     except Exception:
         return
     try:
+        try:
+            fetch_orgcs_identity(data)
+        except Exception:
+            pass
         apply_live_assembled(data)
         sanit = _sanitize_mod()
         sanit.apply_persisted_done(data, None, load_done_ledger())
@@ -8853,7 +8862,7 @@ def apply_orgcs_shift(data: dict, code: str, about: str) -> None:
     zone, short = orgcs_shift_zone(label)
     if zone:
         data["timezone"] = zone
-        if short and not str(data.get("timezoneShort") or "").strip():
+        if short:
             data["timezoneShort"] = short
     start, end = parse_aboutme_hours(about)
     if start and end:
@@ -8894,11 +8903,11 @@ def apply_live_assembled(data: dict) -> None:
     data["assembledFromCalendar"] = live
     if live:
         data["assembledSchedule"] = got["assembledSchedule"]
+        if data.get("shiftHoursFrom") != "orgcs" and got.get("shiftStart") and got.get("shiftEnd"):
+            data["shiftStart"] = got["shiftStart"]
+            data["shiftEnd"] = got["shiftEnd"]
+            data["shiftHoursFrom"] = "assembled"
         if not orgcs_owns:
-            if not str(data.get("shiftStart") or "").strip():
-                data["shiftStart"] = got["shiftStart"]
-                data["shiftEnd"] = got["shiftEnd"]
-                data["shiftHoursFrom"] = "assembled"
             if not str(data.get("timezone") or "").strip() and got.get("timezone"):
                 data["timezone"] = got["timezone"]
             if got.get("timezoneShort") and not str(data.get("timezoneShort") or "").strip():
@@ -9188,30 +9197,64 @@ def resolve_engineer_email(seeded: dict | None = None) -> str:
     return ""
 
 
+def _profile_from_userinfo(text: str) -> dict:
+    out = {"id": parse_orgcs_user_id(text), "name": "", "title": "", "email": parse_orgcs_email(text)}
+    raw = (text or "").strip()
+    obj = None
+    try:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            obj = loaded
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        ident = obj.get("identity") if isinstance(obj.get("identity"), dict) else obj
+        if isinstance(ident, dict):
+            out["name"] = str(ident.get("displayName") or ident.get("name") or ident.get("Name") or "").strip()
+            out["title"] = str(ident.get("title") or ident.get("Title") or "").strip()
+    return out
+
+
+def _soql_quote(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
 def fetch_orgcs_identity(data: dict) -> None:
-    """Name, title, and manager from OrgCS User. Every run. Does not use a previous page."""
+    """Name, title, manager, and OrgCS shift. Every publish. Does not use a previous page."""
     if not isinstance(data, dict) or os.environ.get("DAY_PLANNER_EMPTY") == "1":
         return
     try:
         info = mcp_call_named(ORGCS_MCP_NAMES, "getUserInfo", {}, timeout=20)
     except Exception:
-        return
-    uid = parse_orgcs_user_id(info)
-    name = title = manager = ""
+        info = ""
+    profile = _profile_from_userinfo(info)
+    uid = profile["id"]
+    email = profile["email"]
+    name = profile["name"]
+    title = profile["title"]
+    manager = ""
+    rec: dict = {}
+    soql = ""
     if uid and "'" not in uid:
+        soql = (
+            "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+            "FROM User WHERE Id = '%s' LIMIT 1" % _soql_quote(uid)
+        )
+    elif "@" in email and "'" not in email:
+        soql = (
+            "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+            "FROM User WHERE Email = '%s' LIMIT 1" % _soql_quote(email)
+        )
+    if soql:
         try:
-            text = mcp_call_named(
-                ORGCS_MCP_NAMES,
-                "soqlQuery",
-                {"q": "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name FROM User WHERE Id = '%s' LIMIT 1" % uid},
-                timeout=20,
-            )
+            text = mcp_call_named(ORGCS_MCP_NAMES, "soqlQuery", {"q": soql}, timeout=20)
         except Exception:
             text = ""
         recs = parse_soql_records(text)
         rec = recs[0] if recs else {}
-        name = str(rec.get("Name") or "").strip()
-        title = str(rec.get("Title") or "").strip()
+    if rec:
+        name = str(rec.get("Name") or name).strip()
+        title = str(rec.get("Title") or title).strip()
         mgr = rec.get("Manager") if isinstance(rec.get("Manager"), dict) else {}
         manager = str((mgr or {}).get("Name") or "").strip()
         apply_orgcs_shift(data, str(rec.get("Engineer_Shift__c") or ""), str(rec.get("AboutMe") or ""))
@@ -9220,6 +9263,8 @@ def fetch_orgcs_identity(data: dict) -> None:
             if "@" in val:
                 data["email"] = val
                 break
+    if not str(data.get("email") or "").strip() and "@" in email:
+        data["email"] = email
     if not str(data.get("email") or "").strip():
         found = resolve_engineer_email(data)
         if found:
