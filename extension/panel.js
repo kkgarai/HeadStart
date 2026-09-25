@@ -558,8 +558,8 @@ async function loadMcps() {
     const runner = selectedRunner();
     const resp = await fetch(bridgeUrl + "/mcp/status?runner=" + encodeURIComponent(runner));
     const body = await resp.json().catch(() => ({}));
-    if (!resp.ok || body.error) throw new Error(body.error || "Could not read MCP status");
     let rows = body.mcps || [];
+    if ((!resp.ok || body.error) && !rows.length) throw new Error(body.error || "Could not read MCP status");
     const orgcsDown = rows.some((row) => row && row.id === "orgcs" && row.status !== "connected");
     if (orgcsDown && (await pushOrgcsBrowserSession())) {
       const again = await fetch(bridgeUrl + "/mcp/status?runner=" + encodeURIComponent(runner));

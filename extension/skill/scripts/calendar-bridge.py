@@ -1426,7 +1426,8 @@ def dx_google_connected() -> bool:
     return bool(_GOOGLE_DX_OK or _dx_session_ready())
 
 
-def dx_provider_connected(provider: str) -> bool:
+def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
+    """True when the adaptor already has this provider session. Does not open a login."""
     binary = find_mcp_adaptor_bin()
     if not binary or not provider or not adaptor_supports_provider(binary):
         return False
@@ -1435,7 +1436,7 @@ def dx_provider_connected(provider: str) -> bool:
             [binary, "auth", "--provider", provider, "--validate"],
             capture_output=True,
             text=True,
-            timeout=12,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -2078,8 +2079,148 @@ def aisuite_candidates_for(mcp_id: str) -> list[dict]:
     return []
 
 
+def _mcp_status_log(message: str) -> None:
+    try:
+        path = SKILL_ROOT / "out" / ".bridge.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(message[:500] + "\n")
+    except OSError:
+        pass
+
+
+def _mcp_mark(by_id: dict, mcp_id: str) -> None:
+    row = by_id.get(mcp_id)
+    if not row:
+        return
+    row["status"] = "connected"
+    row["note"] = ""
+
+
+def _mcp_cfg_bearer(cfg: dict) -> str:
+    headers = _mcp_headers(cfg)
+    return str(headers.get("Authorization") or headers.get("authorization") or "").strip()
+
+
+def _apply_stored_mcp_sessions(by_id: dict, suite: dict) -> None:
+    """Sessions each person already saved. One failure stays on that row."""
+    try:
+        if dx_provider_connected("gus", timeout=4) or sf_gus_connected() or aisuite_gus_connected(suite):
+            _mcp_mark(by_id, "gus")
+    except Exception as exc:
+        _mcp_status_log("gus status: " + str(exc))
+    try:
+        if aisuite_server_connected(suite, "slack"):
+            _mcp_mark(by_id, "slack")
+    except Exception as exc:
+        _mcp_status_log("slack status: " + str(exc))
+    try:
+        google_up = aisuite_server_connected(suite, "google-workspace") or dx_google_connected()
+        if google_up:
+            _mcp_mark(by_id, "gmail")
+            _mcp_mark(by_id, "calendar")
+    except Exception as exc:
+        _mcp_status_log("google status: " + str(exc))
+
+
+def _apply_configured_mcp_pings(by_id: dict) -> None:
+    """A configured server counts when this bridge can call it.
+
+    An OAuth client id with no bearer is the host's login, not a session this
+    process can send. OrgCS and Slack keep that login in Claude or Cursor.
+    """
+    servers = discover_mcp_servers("")
+    jobs = []
+    url_index: dict[str, list[str]] = {}
+    for key, _label, names in PLANNER_MCPS:
+        row = by_id[key]
+        if row["status"] == "connected":
+            continue
+        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        for cfg in candidates:
+            if looks_oauth(cfg) and not _mcp_cfg_bearer(cfg):
+                continue
+            url = str(cfg.get("url") or "").strip()
+            if not url:
+                if ping_stdio_mcp(cfg) == "connected":
+                    _mcp_mark(by_id, key)
+                    break
+                continue
+            auth = _mcp_cfg_bearer(cfg)
+            if not auth:
+                continue
+            slot = url + "\n" + auth
+            url_index.setdefault(slot, []).append(key)
+            if not any(job[0] == url and job[2] == auth for job in jobs):
+                jobs.append((url, cfg, auth))
+    if not jobs:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        futs = {pool.submit(ping_http_mcp, cfg): (url, auth) for url, cfg, auth in jobs}
+        for fut in as_completed(futs):
+            url, auth = futs[fut]
+            try:
+                status = fut.result() or "disconnected"
+            except Exception:
+                status = "disconnected"
+            if status != "connected":
+                continue
+            for mcp_id in url_index.get(url + "\n" + auth, []):
+                _mcp_mark(by_id, mcp_id)
+            if "google-workspace" in url:
+                _mcp_mark(by_id, "gmail")
+                _mcp_mark(by_id, "calendar")
+
+
+def _mcp_status_notes(by_id: dict, suite: dict) -> None:
+    orgcs = by_id.get("orgcs")
+    if orgcs and orgcs.get("status") != "connected":
+        orgcs["note"] = "Authenticate the OrgCS MCP in Claude or Cursor"
+    gus = by_id.get("gus")
+    if gus and gus.get("status") != "connected":
+        gus["note"] = "Sign in to the GUS MCP"
+    slack = by_id.get("slack")
+    if slack and slack.get("status") != "connected":
+        slack["note"] = "Sign in to Slack"
+    google_note = "Sign in to Google"
+    if aisuite_server_cfg("google-workspace") and not aisuite_server_connected(suite, "google-workspace"):
+        google_note = "AI Suite did not accept the Google login"
+    for mcp_id in ("gmail", "calendar"):
+        row = by_id.get(mcp_id)
+        if row and row.get("status") != "connected":
+            row["note"] = google_note
+
+
+def planner_mcp_status(runner: str = "") -> list[dict]:
+    del runner
+    rows = [
+        {"id": key, "label": label, "status": "disconnected", "note": ""}
+        for key, label, _names in PLANNER_MCPS
+    ]
+    by_id = {row["id"]: row for row in rows}
+    suite: dict = {}
+    try:
+        suite = aisuite_manager_servers()
+    except Exception as exc:
+        _mcp_status_log("aisuite list: " + str(exc))
+    _apply_stored_mcp_sessions(by_id, suite)
+    try:
+        _apply_configured_mcp_pings(by_id)
+    except Exception as exc:
+        _mcp_status_log("mcp ping: " + str(exc))
+    orgcs = by_id.get("orgcs")
+    if orgcs and orgcs.get("status") != "connected":
+        try:
+            if orgcs_browser_session_ok():
+                _mcp_mark(by_id, "orgcs")
+        except Exception as exc:
+            _mcp_status_log("orgcs browser: " + str(exc))
+    _mcp_status_notes(by_id, suite)
+    return rows
+
+
 def mcp_status_from_aisuite() -> list[dict]:
-    """If the full status check hits a missing file, still show AI Suite's own logins."""
+    """AI Suite logins only. The status route uses planner_mcp_status."""
     suite = {}
     try:
         suite = aisuite_manager_servers()
@@ -2097,98 +2238,6 @@ def mcp_status_from_aisuite() -> list[dict]:
         by_id["slack"]["status"] = "connected"
     if aisuite_gus_connected(suite):
         by_id["gus"]["status"] = "connected"
-    return rows
-
-
-def planner_mcp_status(runner: str = "") -> list[dict]:
-    del runner
-    rows = [
-        {"id": key, "label": label, "status": "disconnected", "note": ""}
-        for key, label, _names in PLANNER_MCPS
-    ]
-    suite = aisuite_manager_servers()
-    google = aisuite_server_cfg("google-workspace")
-    google_up = aisuite_server_connected(suite, "google-workspace")
-    if not google_up:
-        google_status = ping_http_mcp(google) if google else "disconnected"
-        google_up = google_status == "connected" or dx_google_connected()
-    if google_up:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["status"] = "connected"
-                row["note"] = ""
-    elif not google:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["note"] = "AI Suite has no Google credential on this machine"
-    else:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["note"] = "AI Suite did not accept the Google login"
-    servers = discover_mcp_servers("")
-    jobs = []
-    url_index: dict[str, list[int]] = {}
-    by_id = {row["id"]: row for row in rows}
-    for key, _label, names in PLANNER_MCPS:
-        row = by_id[key]
-        if row["status"] == "connected":
-            continue
-        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
-        for cfg in candidates:
-            if looks_oauth(cfg):
-                row["status"] = "connected"
-                row["note"] = ""
-                break
-            url = str(cfg.get("url") or "").strip()
-            if not url:
-                if ping_stdio_mcp(cfg) == "connected":
-                    row["status"] = "connected"
-                    row["note"] = ""
-                    break
-                continue
-            headers = _mcp_headers(cfg)
-            auth = str(headers.get("Authorization") or headers.get("authorization") or "")
-            slot = url + "\n" + auth
-            url_index.setdefault(slot, []).append(key)
-            if not any(job[0] == url and job[2] == auth for job in jobs):
-                jobs.append((url, cfg, auth))
-    if jobs:
-        with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
-            futs = {pool.submit(ping_http_mcp, cfg): (url, auth) for url, cfg, auth in jobs}
-            for fut in as_completed(futs):
-                url, auth = futs[fut]
-                try:
-                    status = fut.result() or "disconnected"
-                except Exception:
-                    status = "disconnected"
-                if status != "connected":
-                    continue
-                for mcp_id in url_index.get(url + "\n" + auth, []):
-                    by_id[mcp_id]["status"] = "connected"
-                    by_id[mcp_id]["note"] = ""
-                if "google-workspace" in url:
-                    for mcp_id in ("gmail", "calendar"):
-                        by_id[mcp_id]["status"] = "connected"
-                        by_id[mcp_id]["note"] = ""
-    for row in rows:
-        if row.get("status") != "connected":
-            row["status"] = "disconnected"
-    orgcs = by_id.get("orgcs")
-    if orgcs and orgcs.get("status") != "connected" and orgcs_browser_session_ok():
-        orgcs["status"] = "connected"
-        orgcs["note"] = ""
-    slack = by_id.get("slack")
-    if slack and slack.get("status") != "connected" and aisuite_server_connected(suite, "slack"):
-        slack["status"] = "connected"
-        slack["note"] = ""
-    gus = by_id.get("gus")
-    if gus and gus.get("status") != "connected" and (
-        aisuite_gus_connected(suite)
-        or sf_gus_connected()
-        or dx_provider_connected("gus")
-    ):
-        gus["status"] = "connected"
-        gus["note"] = ""
     return rows
 
 
@@ -12965,8 +13014,12 @@ class Handler(BaseHTTPRequestHandler):
             runner = str((qs.get("runner") or [""])[0] or "").strip()
             try:
                 mcps = planner_mcp_status(runner)
-            except Exception:
-                mcps = mcp_status_from_aisuite()
+            except Exception as exc:
+                _mcp_status_log("mcp status: " + str(exc))
+                mcps = [
+                    {"id": key, "label": label, "status": "disconnected", "note": ""}
+                    for key, label, _names in PLANNER_MCPS
+                ]
             self._json(200, {"ok": True, "mcps": mcps, "runner": canonicalize_runner_id(runner)})
             return
         if path == "/runners":
