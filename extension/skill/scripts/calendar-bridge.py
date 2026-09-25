@@ -2150,6 +2150,11 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
         candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
         for cfg in candidates:
             if looks_oauth(cfg) and not _mcp_cfg_bearer(cfg):
+                # OrgCS queries run in the fetch sidecar with the user's Claude
+                # settings, which already holds this OAuth login.
+                if key == "orgcs":
+                    _mcp_mark(by_id, key)
+                    break
                 continue
             url = str(cfg.get("url") or "").strip()
             if not url:
