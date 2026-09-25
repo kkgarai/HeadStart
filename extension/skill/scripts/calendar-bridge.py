@@ -2078,6 +2078,28 @@ def aisuite_candidates_for(mcp_id: str) -> list[dict]:
     return []
 
 
+def mcp_status_from_aisuite() -> list[dict]:
+    """If the full status check hits a missing file, still show AI Suite's own logins."""
+    suite = {}
+    try:
+        suite = aisuite_manager_servers()
+    except Exception:
+        suite = {}
+    rows = [
+        {"id": key, "label": label, "status": "disconnected", "note": ""}
+        for key, label, _names in PLANNER_MCPS
+    ]
+    by_id = {row["id"]: row for row in rows}
+    if aisuite_server_connected(suite, "google-workspace"):
+        for mcp_id in ("gmail", "calendar"):
+            by_id[mcp_id]["status"] = "connected"
+    if aisuite_server_connected(suite, "slack"):
+        by_id["slack"]["status"] = "connected"
+    if aisuite_gus_connected(suite):
+        by_id["gus"]["status"] = "connected"
+    return rows
+
+
 def planner_mcp_status(runner: str = "") -> list[dict]:
     del runner
     rows = [
@@ -10047,10 +10069,10 @@ def discover_model_shape(token: str, model_id: str) -> str:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, _body = _probe_gateway_message(token, model_id, "enabled")
+    status, _body = _probe_gateway_message(token, model_id, "plain")
     if status in (401, 403):
         raise RuntimeError("Gateway rejected the token while checking models")
-    shape = "enabled" if status == 200 else "no"
+    shape = "plain" if status == 200 else "no"
     with _MODEL_SHAPE_LOCK:
         _MODEL_SHAPE[model_id] = shape
     return shape
@@ -10062,9 +10084,9 @@ def _prepare_gateway_message(payload: dict) -> None:
         payload["model"] = forced
     model = str(payload.get("model") or "")
     with _MODEL_SHAPE_LOCK:
-        shape = _MODEL_SHAPE.get(model) or "enabled"
+        shape = _MODEL_SHAPE.get(model) or "plain"
     if shape == "no":
-        shape = "enabled"
+        shape = "plain"
     _apply_planner_shape(payload, shape, _planner_effort(model, payload))
 
 
@@ -12881,9 +12903,8 @@ class Handler(BaseHTTPRequestHandler):
             runner = str((qs.get("runner") or [""])[0] or "").strip()
             try:
                 mcps = planner_mcp_status(runner)
-            except Exception as exc:
-                self._json(502, {"error": str(exc) or "mcp status failed"})
-                return
+            except Exception:
+                mcps = mcp_status_from_aisuite()
             self._json(200, {"ok": True, "mcps": mcps, "runner": canonicalize_runner_id(runner)})
             return
         if path == "/runners":
