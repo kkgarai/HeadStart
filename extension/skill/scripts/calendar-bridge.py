@@ -5407,6 +5407,7 @@ def forget_prior_fetches(data: dict) -> None:
         "mailFetchError",
         "mailCandidates",
         "_mailFetchTried",
+        "_inboxOpened",
         "gusFetchOk",
         "gusFetchError",
         "gusCandidates",
