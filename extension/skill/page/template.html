@@ -3057,7 +3057,8 @@
         if (cal && /calendar\.google\.com/i.test(cal)) keys.push("calurl:" + cal);
         var start = String(item.startStamp || "").trim();
         var lab = String(item.label || "").trim().toLowerCase().replace(/\s+/g, " ");
-        if (start && lab) keys.push("slot:" + start + ":" + lab);
+        var hasCase = keys.some(function (k) { return k.indexOf("case:") === 0; });
+        if (start && lab && !hasCase) keys.push("slot:" + start + ":" + lab);
         var slackFields = [item.slackUrl, item.slackPermalink, item.threadUrl, item.permalink];
         if (isSlackRow(item) || String(item.kind || "").toLowerCase() === "slack") {
           var sk = slackDoneIdentity(item);

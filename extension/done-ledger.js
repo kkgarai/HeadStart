@@ -165,7 +165,8 @@ function edpItemKeys(item) {
   if (cal && /calendar\.google\.com/i.test(cal)) keys.push("calurl:" + cal);
   const start = String(item.startStamp || "").trim();
   const lab = String(item.label || "").trim().toLowerCase().replace(/\s+/g, " ");
-  if (start && lab) keys.push("slot:" + start + ":" + lab);
+  const hasCase = keys.some((k) => k.indexOf("case:") === 0);
+  if (start && lab && !hasCase) keys.push("slot:" + start + ":" + lab);
   const mid = String(item.messageId || item.gmailId || "").trim();
   if (/^[0-9a-f]{10,}$/i.test(mid)) keys.push("mailid:" + mid.toLowerCase());
   const mailRow = ident.match(/^mail-([0-9a-f]{10,})$/i);

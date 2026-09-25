@@ -2675,11 +2675,21 @@ def _gus_mail_url(row: dict) -> str:
     return ""
 
 
+def _mail_notice_blob(row: dict) -> str:
+    return " ".join(
+        str(row.get(key) or "")
+        for key in ("label", "detail", "snippet", "openedClip", "from")
+    )
+
+
+def _mail_richness(row: dict) -> int:
+    return len(str(row.get("openedClip") or "")) + len(str(row.get("snippet") or ""))
+
+
 def _gus_notice_mails(data: dict, gather: dict) -> list[dict]:
-    found: list[dict] = []
-    seen: set[str] = set()
+    found: dict[str, dict] = {}
     pools: list = []
-    for src in (gather.get("mailCandidates"), data.get("mailCandidates")):
+    for src in (data.get("mailCandidates"), gather.get("mailCandidates")):
         if isinstance(src, list):
             pools.extend(src)
     for sec in data.get("sections") or []:
@@ -2693,27 +2703,123 @@ def _gus_notice_mails(data: dict, gather: dict) -> list[dict]:
         if not isinstance(row, dict) or not _is_gus_notice_mail(row):
             continue
         ident = str(row.get("id") or row.get("messageId") or _gus_mail_url(row))
-        if not ident or ident in seen:
+        if not ident:
             continue
-        seen.add(ident)
-        found.append(row)
-    return found
+        prev = found.get(ident)
+        if prev is None or _mail_richness(row) > _mail_richness(prev):
+            found[ident] = row
+    return list(found.values())
+
+
+def _lap_case_num(blob: str) -> str:
+    m = re.search(r"Case Number:\s*(\d{5,})", blob, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(\d{8,})\s*[—\-]\s*LAP-BlackTab-Bot", blob)
+    return m.group(1) if m else ""
+
+
+def _mail_notice_time(mail: dict) -> float:
+    blob = str(mail.get("openedClip") or mail.get("snippet") or "")
+    m = re.search(
+        r"Date:\s*([A-Za-z]{3},\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+[0-9:]+)",
+        blob,
+    )
+    if not m:
+        return 0.0
+    try:
+        from email.utils import parsedate_to_datetime
+
+        return parsedate_to_datetime(m.group(1)).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _lap_mail_item(mail: dict) -> dict:
+    """One GUS row for a LAP-BlackTab-Bot mention that matched no open work item."""
+    blob = _mail_notice_blob(mail)
+    num = _lap_case_num(blob)
+    status_m = re.search(
+        r"Status:\s*(.+?)(?:\s+More information|\s+Thank you!|\s+View post|$)",
+        blob,
+        re.I,
+    )
+    status = status_m.group(1).strip(" .") if status_m else ""
+    body_m = re.search(
+        r"Case Number:\s*\d+\s+Subject:\s*(.+?)\s+Company:\s*(.+?)\s+LAP Type:",
+        blob,
+        re.I,
+    )
+    subject = body_m.group(1).strip() if body_m else ""
+    company = body_m.group(2).strip() if body_m else ""
+    end_m = re.search(
+        r"end date-time\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+        blob,
+        re.I,
+    )
+    end = end_m.group(1).strip() if end_m else ""
+    gus_m = re.search(r"https://gus\.my\.salesforce\.com/[A-Za-z0-9]+", blob)
+    if num and status:
+        label = f"LAP {num} · {status}"
+    elif num:
+        label = f"LAP {num}"
+    else:
+        label = str(mail.get("label") or "LAP-BlackTab-Bot")
+    bits = []
+    if company and subject:
+        bits.append(f"{company} — {subject}.")
+    elif company:
+        bits.append(company + ".")
+    elif subject:
+        bits.append(subject + ".")
+    if end:
+        bits.append(f"End {end} UTC has passed.")
+    if re.search(r"passed the end|assigned owner|manual revert", blob, re.I):
+        bits.append("You own it. Revert the org value off-peak, or close it after an extension.")
+    item = {
+        "id": "gusmail-" + (num or re.sub(r"[^A-Za-z0-9]", "", str(mail.get("id") or ""))[:24] or "lap"),
+        "kind": "gus",
+        "label": label[:140],
+        "detail": (" ".join(bits) or "LAP-BlackTab-Bot mentioned you.")[:220],
+        "mailUrl": _gus_mail_url(mail),
+    }
+    if gus_m:
+        item["gusUrl"] = gus_m.group(0)
+    return item
 
 
 def _attach_gus_notice_mail(items: list, mails: list[dict]) -> None:
+    pending: dict[str, dict] = {}
     for mail in mails:
-        blob = " ".join(str(mail.get(key) or "") for key in ("label", "detail", "snippet", "openedClip", "from"))
+        blob = _mail_notice_blob(mail)
         works, cases = _notice_ids(blob)
         url = _gus_mail_url(mail)
         if not url:
             continue
+        linked = False
         for it in items:
             if not isinstance(it, dict):
                 continue
             have_w, have_c = _notice_ids(f"{it.get('label') or ''} {it.get('detail') or ''}")
             if (works and works & have_w) or (cases and cases & have_c):
                 it["mailUrl"] = url
+                linked = True
                 break
+        if linked:
+            continue
+        key = _lap_case_num(blob) or url
+        prev = pending.get(key)
+        if prev is None or _mail_notice_time(mail) >= _mail_notice_time(prev):
+            pending[key] = mail
+    have = {str(it.get("id") or "") for it in items if isinstance(it, dict)}
+    labels = " ".join(str(it.get("label") or "") for it in items if isinstance(it, dict))
+    for mail in pending.values():
+        item = _lap_mail_item(mail)
+        num = _lap_case_num(_mail_notice_blob(mail))
+        if item["id"] in have or (num and num in labels):
+            continue
+        items.append(item)
+        have.add(item["id"])
 
 
 def _drop_gus_notice_mail(data: dict, mails: list[dict]) -> None:
@@ -2975,7 +3081,10 @@ def item_done_keys(it: dict) -> list[str]:
         keys.append("calurl:" + html)
     start = str(it.get("startStamp") or "").strip()
     lab = re.sub(r"\s+", " ", str(it.get("label") or "").strip().lower())
-    if start and lab:
+    # Case rows stay on case:. A shared label ("Needs Us Now") must not
+    # complete whichever case the next run places in that clock slot.
+    has_case = any(k.startswith("case:") for k in keys)
+    if start and lab and not has_case:
         keys.append("slot:" + start + ":" + lab)
     cid = str(it.get("channelId") or it.get("slackChannel") or "").strip()
     ts = str(it.get("ts") or it.get("threadTs") or it.get("message_ts") or "").strip()
