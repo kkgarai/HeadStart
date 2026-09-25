@@ -2239,8 +2239,11 @@ def restore_last_good_inbox(data: dict, prev: dict | None) -> None:
             continue
         if not _inbox_rows(old_sec):
             continue
-        new_sec["groups"] = old_sec.get("groups") or []
-        new_sec["items"] = old_sec.get("items") or []
+        groups, items = _inbox_without_done(old_sec, collect_done_keys(data) | collect_done_keys(prev) | disk_done_keys())
+        if not groups and not items:
+            continue
+        new_sec["groups"] = groups
+        new_sec["items"] = items
         new_sec.pop("empty", None)
 
 
@@ -2790,6 +2793,23 @@ def refuse_false_gus_clear(data: dict) -> None:
         break
 
 
+def _inbox_without_done(sec: dict, keys: set[str]) -> tuple[list, list]:
+    def not_done(it: object) -> bool:
+        return isinstance(it, dict) and not inbox_row_is_done(it, keys)
+
+    groups = []
+    for group in sec.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        items = [it for it in (group.get("items") or []) if not_done(it)]
+        if items:
+            copied = dict(group)
+            copied["items"] = items
+            groups.append(copied)
+    items = [it for it in (sec.get("items") or []) if not_done(it)]
+    return groups, items
+
+
 def restore_unreviewed_inbox(data: dict, prev: dict | None, force: bool = False) -> bool:
     """If leftover fetch never finished, keep last classified Slack/Mail/GUS."""
     if not isinstance(data, dict) or not isinstance(prev, dict):
@@ -2819,8 +2839,11 @@ def restore_unreviewed_inbox(data: dict, prev: dict | None, force: bool = False)
             continue
         if not _inbox_rows(old_sec):
             continue
-        new_sec["groups"] = old_sec.get("groups") or []
-        new_sec["items"] = old_sec.get("items") or []
+        groups, items = _inbox_without_done(old_sec, collect_done_keys(data) | collect_done_keys(prev) | disk_done_keys())
+        if not groups and not items:
+            continue
+        new_sec["groups"] = groups
+        new_sec["items"] = items
         new_sec.pop("empty", None)
         restored = True
     return restored
@@ -3214,11 +3237,40 @@ def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
     return False
 
 
+def _done_ledger_files() -> list[pathlib.Path]:
+    found: list[pathlib.Path] = []
+    here = pathlib.Path(__file__).resolve().parent.parent / "out" / ".done-keys.json"
+    if here.is_file():
+        found.append(here)
+    runs = pathlib.Path.home() / "Library" / "Application Support" / "engineer-day-planner" / "runs"
+    try:
+        extra = [path for path in runs.glob("*/skill/out/.done-keys.json") if path.is_file()]
+    except OSError:
+        extra = []
+    extra.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in extra:
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def disk_done_keys() -> set[str]:
+    """Done marks from this snapshot and earlier ones. A new run must omit those Slack and Mail rows."""
+    keys: set[str] = set()
+    for path in _done_ledger_files():
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        keys |= _ledger_keys(rec)
+    return keys
+
+
 def omit_done_inbox_rows(data: dict) -> None:
     """Next Run Planner drops Slack/Mail already marked Done. The open page keeps them struck."""
     if not isinstance(data, dict):
         return
-    keys = collect_done_keys(data)
+    keys = collect_done_keys(data) | disk_done_keys()
     for sec in data.get("sections") or []:
         if not isinstance(sec, dict):
             continue

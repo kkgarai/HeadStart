@@ -6284,7 +6284,9 @@ def salvage_publish_plan(started_epoch: float) -> bool:
         except Exception:
             prev = None
         try:
-            _sanitize_mod().restore_unreviewed_inbox(data, prev)
+            sanit = _sanitize_mod()
+            sanit.restore_unreviewed_inbox(data, prev)
+            sanit.omit_done_inbox_rows(data)
         except Exception:
             pass
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -6331,7 +6333,9 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 prev = load_page_briefing()
-                _sanitize_mod().restore_unreviewed_inbox(data, prev, force=True)
+                sanit = _sanitize_mod()
+                sanit.restore_unreviewed_inbox(data, prev, force=True)
+                sanit.omit_done_inbox_rows(data)
                 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
