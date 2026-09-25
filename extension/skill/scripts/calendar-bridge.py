@@ -10014,11 +10014,6 @@ def _apply_planner_shape(payload: dict, shape: str, effort: str) -> None:
         payload.pop(key, None)
 
 
-def _suggests_adaptive(text: str) -> bool:
-    low = (text or "").lower()
-    return "adaptive" in low or "thinking.type" in low or "output_config" in low
-
-
 def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, str]:
     payload = {
         "model": model_id,
