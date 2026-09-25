@@ -9324,6 +9324,23 @@ def fetch_orgcs_identity(data: dict) -> None:
         found = resolve_engineer_email(data)
         if found:
             data["email"] = found
+    if not name:
+        saved = _orgcs_identity_file()
+        name = str(saved.get("name") or "").strip()
+        title = title or str(saved.get("title") or "").strip()
+        manager = manager or str(saved.get("manager") or "").strip()
+        if not str(data.get("engineerShift") or "").strip():
+            apply_orgcs_shift(
+                data,
+                str(saved.get("engineerShift") or ""),
+                str(saved.get("aboutMe") or ""),
+            )
+        if not str(data.get("email") or "").strip():
+            for key in ("email", "username"):
+                val = str(saved.get(key) or "").strip()
+                if "@" in val:
+                    data["email"] = val
+                    break
     if name:
         data["name"] = name
     if title:
@@ -9332,6 +9349,15 @@ def fetch_orgcs_identity(data: dict) -> None:
         data["manager"] = manager
     if name or title or manager:
         persist_identity(data)
+
+
+def _orgcs_identity_file() -> dict:
+    """Written by the OrgCS fetch when getUserInfo is not callable."""
+    try:
+        loaded = json.loads(pathlib.Path("/tmp/orgcs-identity.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def parse_soql_records(text: str) -> list:
@@ -11880,13 +11906,18 @@ def orgcs_username(email: str) -> str:
 def fetch_prompt_for_ids(ids: list[str]) -> str:
     username = orgcs_username(resolve_engineer_email())
     user_query = (
-        "SELECT Id FROM User WHERE Username = '%s' LIMIT 1" % username
+        "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+        "FROM User WHERE Username = '%s' LIMIT 1" % username
         if username
-        else "SELECT Id FROM User WHERE Username LIKE '%@orgcs.com' AND IsActive = true LIMIT 5"
+        else "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+        "FROM User WHERE Username LIKE '%@orgcs.com' AND IsActive = true LIMIT 5"
     )
     return (
         "Do not call getUserInfo. It errors and is not required. "
         "Call mcp__orgcs__soqlQuery: " + user_query + ". "
+        "Write /tmp/orgcs-identity.json as "
+        "{\"name\",\"title\",\"manager\",\"email\",\"username\",\"engineerShift\",\"aboutMe\"} "
+        "from that User row. manager is Manager.Name. engineerShift is Engineer_Shift__c. "
         "Then mcp__orgcs__soqlQuery: "
         "SELECT Id, CaseNumber, Subject, Status, Severity_Level__c, LastModifiedDate, IsClosed, "
         "SE_Initial_Response_Status__c, SE_Target_Response__c, First_Response_Date_Time__c, "
