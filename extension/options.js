@@ -160,8 +160,7 @@ const PLANNER_MCP_ROWS = [
   { id: "orgcs", label: "OrgCS" },
   { id: "gus", label: "GUS" },
   { id: "slack", label: "Slack" },
-  { id: "gmail", label: "Gmail" },
-  { id: "calendar", label: "Calendar" }
+  { id: "google", label: "Gmail & Calendar" }
 ];
 
 function mcpStatusLabel(status) {

@@ -398,8 +398,7 @@ const PLANNER_MCP_ROWS = [
   { id: "orgcs", label: "OrgCS" },
   { id: "gus", label: "GUS" },
   { id: "slack", label: "Slack" },
-  { id: "gmail", label: "Gmail" },
-  { id: "calendar", label: "Calendar" }
+  { id: "google", label: "Gmail & Calendar" }
 ];
 
 function mcpStatusLabel(status, note) {
@@ -437,7 +436,7 @@ function renderMcps(rows) {
       btn.addEventListener("click", useOrgcsBrowserSession);
       side.appendChild(btn);
     }
-    if (row && row.id === "gmail" && googleNeedsSignIn(list)) {
+    if (row && row.id === "google" && googleNeedsSignIn(list)) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn";
@@ -482,7 +481,7 @@ async function startDxGusAuth() {
 
 function googleNeedsSignIn(list) {
   return (list || []).some((row) => {
-    return row && (row.id === "gmail" || row.id === "calendar") && row.status !== "connected" && row.status !== "checking";
+    return row && (row.id === "google" || row.id === "gmail" || row.id === "calendar") && row.status !== "connected" && row.status !== "checking";
   });
 }
 
@@ -1274,7 +1273,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 (function tabFlash() {
   var timer = null;
-  var REAL_TITLE = "Engineer Day Planner";
+  var REAL_TITLE = "Day Planner";
   var flashMsg = "Notification";
   function isFlashTitle(t) {
     t = String(t || "").trim();

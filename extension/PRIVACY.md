@@ -1,4 +1,4 @@
-# Privacy — Engineer Day Planner
+# Privacy — Day Planner
 
 This extension runs a **local** planner page. It does not send your cases, mail, Slack, or calendar to the Chrome Web Store publisher.
 

@@ -541,8 +541,7 @@ PLANNER_MCPS = (
     ("orgcs", "OrgCS", ("orgcs", "user-orgcs", "org-cs", "org_cs")),
     ("gus", "GUS", ("gus_server", "gus-server", "gus")),
     ("slack", "Slack", ("slack",)),
-    ("gmail", "Gmail", ("google-workspace", "google_workspace", "gmail")),
-    ("calendar", "Calendar", ("google-workspace", "google_workspace", "google-calendar", "gcal")),
+    ("google", "Gmail & Calendar", ("google-workspace", "google_workspace", "gmail", "google-calendar", "gcal")),
 )
 MCP_SKIP_KEYS = (
     "omni",
@@ -2067,7 +2066,7 @@ def mcp_server_candidates(servers: dict, names: tuple[str, ...]) -> list[dict]:
 
 def aisuite_candidates_for(mcp_id: str) -> list[dict]:
     """AI Suite on this machine. DevBar does not host these servers."""
-    if mcp_id in {"gmail", "calendar"}:
+    if mcp_id in {"google", "gmail", "calendar"}:
         cfg = aisuite_server_cfg("google-workspace")
         return [cfg] if cfg else []
     if mcp_id == "gus":
@@ -2102,13 +2101,26 @@ def _mcp_cfg_bearer(cfg: dict) -> str:
     return str(headers.get("Authorization") or headers.get("authorization") or "").strip()
 
 
+def _gus_session_connected(suite: dict) -> bool:
+    """Each GUS login is its own check. A thrown adaptor call still leaves the CLI org."""
+    checks = (
+        ("adaptor", lambda: dx_provider_connected("gus", timeout=4)),
+        ("sf", sf_gus_connected),
+        ("aisuite", lambda: aisuite_gus_connected(suite)),
+    )
+    for label, fn in checks:
+        try:
+            if fn():
+                return True
+        except Exception as exc:
+            _mcp_status_log("gus " + label + ": " + str(exc))
+    return False
+
+
 def _apply_stored_mcp_sessions(by_id: dict, suite: dict) -> None:
     """Sessions each person already saved. One failure stays on that row."""
-    try:
-        if dx_provider_connected("gus", timeout=4) or sf_gus_connected() or aisuite_gus_connected(suite):
-            _mcp_mark(by_id, "gus")
-    except Exception as exc:
-        _mcp_status_log("gus status: " + str(exc))
+    if _gus_session_connected(suite):
+        _mcp_mark(by_id, "gus")
     try:
         if aisuite_server_connected(suite, "slack"):
             _mcp_mark(by_id, "slack")
@@ -2117,8 +2129,7 @@ def _apply_stored_mcp_sessions(by_id: dict, suite: dict) -> None:
     try:
         google_up = aisuite_server_connected(suite, "google-workspace") or dx_google_connected()
         if google_up:
-            _mcp_mark(by_id, "gmail")
-            _mcp_mark(by_id, "calendar")
+            _mcp_mark(by_id, "google")
     except Exception as exc:
         _mcp_status_log("google status: " + str(exc))
 
@@ -2168,8 +2179,7 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
             for mcp_id in url_index.get(url + "\n" + auth, []):
                 _mcp_mark(by_id, mcp_id)
             if "google-workspace" in url:
-                _mcp_mark(by_id, "gmail")
-                _mcp_mark(by_id, "calendar")
+                _mcp_mark(by_id, "google")
 
 
 def _mcp_status_notes(by_id: dict, suite: dict) -> None:
@@ -2183,12 +2193,18 @@ def _mcp_status_notes(by_id: dict, suite: dict) -> None:
     if slack and slack.get("status") != "connected":
         slack["note"] = "Sign in to Slack"
     google_note = "Sign in to Google"
-    if aisuite_server_cfg("google-workspace") and not aisuite_server_connected(suite, "google-workspace"):
+    try:
+        has_google = bool(aisuite_server_cfg("google-workspace"))
+        google_up = aisuite_server_connected(suite, "google-workspace")
+    except Exception as exc:
+        _mcp_status_log("google note: " + str(exc))
+        has_google = False
+        google_up = False
+    if has_google and not google_up:
         google_note = "AI Suite did not accept the Google login"
-    for mcp_id in ("gmail", "calendar"):
-        row = by_id.get(mcp_id)
-        if row and row.get("status") != "connected":
-            row["note"] = google_note
+    google = by_id.get("google")
+    if google and google.get("status") != "connected":
+        google["note"] = google_note
 
 
 def planner_mcp_status(runner: str = "") -> list[dict]:
@@ -2215,7 +2231,10 @@ def planner_mcp_status(runner: str = "") -> list[dict]:
                 _mcp_mark(by_id, "orgcs")
         except Exception as exc:
             _mcp_status_log("orgcs browser: " + str(exc))
-    _mcp_status_notes(by_id, suite)
+    try:
+        _mcp_status_notes(by_id, suite)
+    except Exception as exc:
+        _mcp_status_log("mcp notes: " + str(exc))
     return rows
 
 
@@ -2232,8 +2251,7 @@ def mcp_status_from_aisuite() -> list[dict]:
     ]
     by_id = {row["id"]: row for row in rows}
     if aisuite_server_connected(suite, "google-workspace"):
-        for mcp_id in ("gmail", "calendar"):
-            by_id[mcp_id]["status"] = "connected"
+        by_id["google"]["status"] = "connected"
     if aisuite_server_connected(suite, "slack"):
         by_id["slack"]["status"] = "connected"
     if aisuite_gus_connected(suite):

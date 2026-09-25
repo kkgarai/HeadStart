@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-time native-host registration for Engineer Day Planner.
+"""One-time native-host registration for Day Planner.
 
 Chrome cannot write NativeMessagingHosts from the extension. Run this once,
 by file path, from the folder you loaded:
@@ -370,7 +370,7 @@ def main() -> int:
     skill = find_skill()
     if skill is None:
         sys.stderr.write(
-            "Engineer Day Planner skill/ not found.\n"
+            "Day Planner skill/ not found.\n"
             "Install the extension (Load unpacked or Chrome Web Store), then run this again.\n"
         )
         return 1
@@ -426,7 +426,7 @@ def main() -> int:
         prune_old_runs(skill)
     url = (out.decode("utf-8", "replace") or "").strip().splitlines()
     print(url[-1] if url else "ok")
-    print("Native host registered. Click the Engineer Day Planner toolbar icon.", file=sys.stderr)
+    print("Native host registered. Click the Day Planner toolbar icon.", file=sys.stderr)
     return 0
 
 
