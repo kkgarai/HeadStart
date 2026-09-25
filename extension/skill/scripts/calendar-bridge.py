@@ -5215,6 +5215,8 @@ def digest_activity_stats() -> tuple[int, int]:
                 empty = True
             continue
         if started and ln.strip() and "no clipped comment/email yet" not in ln:
+            if re.match(r"^-\s+(ir|gus related|live):", ln.strip(), re.I):
+                continue
             empty = False
     if started and not empty:
         filled += 1
@@ -11907,7 +11909,133 @@ def orgcs_username(email: str) -> str:
     return local + "@orgcs.com"
 
 
+_THREAD_PARENT_RE = re.compile(r"ParentId\s*=\s*'?(500[A-Za-z0-9]{12,18})'?", re.I)
+_THREAD_IN_RE = re.compile(r"ParentId\s+IN\s*\(([^)]*)\)", re.I)
+QUERIED_THREADS_FILE = pathlib.Path("/tmp/case-thread-queried.json")
+_THREAD_KINDS = ("comment", "email", "feed")
+
+
+def thread_query_kind(soql: str) -> str:
+    low = soql.lower()
+    if "from casecomment" in low:
+        return "comment"
+    if "from emailmessage" in low:
+        return "email"
+    if "from casefeed" in low:
+        return "feed"
+    return ""
+
+
+def thread_query_ids(soql: str) -> set[str]:
+    ids = set(_THREAD_PARENT_RE.findall(soql))
+    inn = _THREAD_IN_RE.search(soql)
+    if inn:
+        ids.update(re.findall(r"500[A-Za-z0-9]{12,18}", inn.group(1)))
+    return ids
+
+
+def soql_from_input(inp: dict) -> str:
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("q", "query", "soql", "sql"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def note_thread_query(flags: dict, soql: str) -> None:
+    kind = thread_query_kind(soql)
+    ids = thread_query_ids(soql)
+    if not kind or not ids:
+        return
+    flags["pending_thread"] = (kind, ids)
+
+
+def cover_pending_thread(flags: dict) -> None:
+    pending = flags.get("pending_thread")
+    if not pending:
+        return
+    kind, ids = pending
+    bag = flags.setdefault("queried", {})
+    for cid in ids:
+        bag.setdefault(cid, set()).add(kind)
+    flags["pending_thread"] = None
+
+
+def save_queried_threads(flags: dict) -> None:
+    prev: dict = {}
+    try:
+        loaded = json.loads(QUERIED_THREADS_FILE.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            prev = loaded
+    except (OSError, json.JSONDecodeError):
+        prev = {}
+    for cid, kinds in (flags.get("queried") or {}).items():
+        have = set(prev.get(cid) or [])
+        have.update(kinds)
+        prev[str(cid)] = sorted(have)
+    try:
+        QUERIED_THREADS_FILE.write_text(json.dumps(prev), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def owned_case_ids_on_disk() -> list[str]:
+    try:
+        data = json.loads(OWNED_CASES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    recs = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(recs, list):
+        return []
+    out = []
+    seen = set()
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        cid = str(rec.get("Id") or "")
+        if cid.startswith("500") and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def fetch_queries_done(flags: dict) -> bool:
+    ids = owned_case_ids_on_disk()
+    if not ids:
+        return False
+    queried = flags.get("queried") or {}
+    need = set(_THREAD_KINDS)
+    for cid in ids:
+        if need - set(queried.get(cid) or ()):
+            return False
+    return True
+
+
+def missing_thread_ids() -> list[str]:
+    try:
+        queried = json.loads(QUERIED_THREADS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        queried = {}
+    if not isinstance(queried, dict):
+        queried = {}
+    need = set(_THREAD_KINDS)
+    missing = []
+    for cid in owned_case_ids_on_disk():
+        if need - set(queried.get(cid) or ()):
+            missing.append(cid)
+    return missing
+
+
 def fetch_prompt_for_ids(ids: list[str]) -> str:
+    if ids:
+        return (
+            "Open cases are already in /tmp/owned-cases.json. Do not query User or Case. "
+            "For each ParentId below, run CaseComment, EmailMessage, and CaseFeed. "
+            "Use the same LIMIT on each. Do not stop until every id has all three queries. "
+            "ParentIds: " + " ".join(ids)
+        )
     username = orgcs_username(resolve_engineer_email())
     user_query = (
         "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
@@ -11929,8 +12057,9 @@ def fetch_prompt_for_ids(ids: list[str]) -> str:
         "FROM Case WHERE OwnerId = '<that Id>' AND IsClosed = false "
         "ORDER BY LastModifiedDate DESC LIMIT 80 (never Description). "
         "Write {\"records\":[...]} to /tmp/owned-cases.json. "
-        "Then three soqlQuery calls with ParentId IN those Ids only "
-        "(CaseComment, EmailMessage with TextBody, CaseFeed). "
+        "Then one CaseComment query, one EmailMessage query, and one CaseFeed query "
+        "for every open case id. Use the same LIMIT on each. "
+        "Do not stop after the first case. "
         "EmailMessage is mandatory — do not skip it. Never fetch a closed or not-owned case. Reply: fetched"
     )
 
@@ -12035,13 +12164,12 @@ def run_orgcs_fetch_sidecar(env: dict, chosen: str, ids: list[str]) -> int:
                 handle_stream_line(line, flags)
                 if flags.pop("need_sweep", False):
                     stub_stale_planner_overflows()
-                objs = flags.get("thread_objects") or set()
-                if "comment" in objs and "email" in objs:
-                    if "feed" in objs or time.monotonic() > deadline - 20:
-                        break
+                if flags.get("fetch_mode") and fetch_queries_done(flags):
+                    break
     except subprocess.TimeoutExpired:
         pass
     finally:
+        save_queried_threads(flags)
         stop_watch.set()
         watch.join(timeout=2)
         stub_stale_planner_overflows()
@@ -12109,7 +12237,18 @@ def gather_clipped_case_threads(
             append_plan_step(kind="log", label=f"Python clipped comments/email on {n_py} cases")
             return attach_clipped_activity(seeded, evidence)
     if runner_id == "claude" or find_claude_bin():
+        try:
+            QUERIED_THREADS_FILE.unlink()
+        except OSError:
+            pass
         run_orgcs_fetch_sidecar(env, chosen, [])
+        missing = missing_thread_ids()
+        if missing:
+            append_plan_step(
+                kind="log",
+                label=f"Case threads still missing on {len(missing)} cases",
+            )
+            run_orgcs_fetch_sidecar(env, chosen, missing)
         rows = fetch_owned_open_cases()
         snapshot_ok = bool(rows) or _owned_fetch_ok()
         if snapshot_ok:
@@ -12174,6 +12313,7 @@ def handle_stream_line(line: str, flags: dict) -> None:
         if not isinstance(inp, dict):
             inp = {}
         ingest_read_overflow_path(name, inp, flags)
+        note_thread_query(flags, soql_from_input(inp))
         append_plan_step(kind="tool", label=label_tool(name), detail=tool_detail(name, inp))
         return
     if et in {"session.error", "message.error"}:
@@ -12228,6 +12368,7 @@ def handle_stream_line(line: str, flags: dict) -> None:
                 if not isinstance(inp, dict):
                     inp = {}
                 ingest_read_overflow_path(name, inp, flags)
+                note_thread_query(flags, soql_from_input(inp))
                 append_plan_step(kind="tool", label=label, detail=tool_detail(name, inp))
         return
     if et == "user":
@@ -12237,6 +12378,10 @@ def handle_stream_line(line: str, flags: dict) -> None:
                 continue
             if block.get("type") != "tool_result":
                 continue
+            if block.get("is_error"):
+                flags["pending_thread"] = None
+            else:
+                cover_pending_thread(flags)
             ingest_overflow_from_tool_result(block.get("content"), flags)
             flags["need_sweep"] = True
             err = bool(block.get("is_error"))
