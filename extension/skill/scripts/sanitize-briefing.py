@@ -5121,6 +5121,26 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
     clock = meetings + placed
     clock.sort(key=lambda it: _wall(it.get("startStamp") or "") or datetime.min)
     plan["items"] = clock
+    specs = data.get("todayPlan")
+    if not isinstance(specs, list):
+        specs = []
+    have = {str(row.get("id") or "") for row in specs if isinstance(row, dict)}
+    for it in clock:
+        if not isinstance(it, dict):
+            continue
+        rid = str(it.get("id") or "")
+        if not rid.startswith("plan-break") or rid in have:
+            continue
+        specs.append(
+            {
+                "id": rid,
+                "kind": "break",
+                "label": it.get("label") or "Short break",
+                "minutes": it.get("durationMinutes") or 12,
+            }
+        )
+        have.add(rid)
+    data["todayPlan"] = specs
     if clock:
         plan.pop("empty", None)
     if len(overrides) > 80:
