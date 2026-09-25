@@ -4414,6 +4414,7 @@ def fill_slack_leftovers(data: dict) -> None:
         gus_notice_query("GUS Bot"),
         gus_notice_query("Work Notifier"),
         gus_notice_query("GUS Chatter"),
+        gus_notice_query("chatter feed"),
     )
     gus_work = gus_notice_query("W-")
     gus_work["keywords"] = ["W-"]
@@ -5241,6 +5242,19 @@ def _id_only_candidates(rows, extra: tuple[str, ...] = ()) -> list[dict]:
             item["unread"] = bool(row.get("unread"))
         if "lastHumanIsMe" in row:
             item["lastHumanIsMe"] = bool(row.get("lastHumanIsMe"))
+        blob = " ".join(str(row.get(key) or "") for key in ("label", "snippet", "openedClip", "from"))
+        gus_notice = row.get("gusBot") is True or bool(
+            re.search(r"chatter feed|gus bot|work notifier|gus chatter", blob, re.I)
+        )
+        if gus_notice:
+            item["gusBot"] = True
+            for key in ("label", "slackUrl", "channelId", "ts", "from", "mailUrl"):
+                val = row.get(key)
+                if val:
+                    item[key] = str(val)[:180]
+            snip = row.get("snippet") or row.get("openedClip") or ""
+            if snip:
+                item["snippet"] = str(snip)[:400]
         for key in extra:
             val = row.get(key)
             if val:

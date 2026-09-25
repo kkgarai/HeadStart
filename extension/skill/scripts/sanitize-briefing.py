@@ -2529,9 +2529,16 @@ def ensure_gus_bot_rows(data: dict) -> None:
     if not isinstance(data, dict):
         return
     gather = _load_planner_gather()
+    inbox_slack: list = []
+    try:
+        inbox = json.loads(pathlib.Path("/tmp/planner-inbox.json").read_text(encoding="utf-8"))
+        if isinstance(inbox, dict) and isinstance(inbox.get("slack"), list):
+            inbox_slack = inbox["slack"]
+    except (OSError, json.JSONDecodeError):
+        inbox_slack = []
     rows: list[dict] = []
     seen: set[str] = set()
-    for src in (gather.get("slackCandidates"), data.get("slackCandidates")):
+    for src in (inbox_slack, gather.get("slackCandidates"), data.get("slackCandidates")):
         if not isinstance(src, list):
             continue
         for row in src:
