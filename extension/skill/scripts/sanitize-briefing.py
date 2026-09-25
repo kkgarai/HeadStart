@@ -2788,6 +2788,38 @@ def _lap_mail_item(mail: dict) -> dict:
     return item
 
 
+def lap_mail_digest(mails: list) -> str:
+    """Digest blocks for LAP-BlackTab-Bot mention mail. The model writes the GUS row."""
+    pending: dict[str, dict] = {}
+    for mail in mails or []:
+        if not isinstance(mail, dict) or not _is_gus_notice_mail(mail):
+            continue
+        blob = _mail_notice_blob(mail)
+        if "LAP-BlackTab" not in blob and "lap-blacktab" not in blob.lower():
+            continue
+        key = _lap_case_num(blob) or str(mail.get("id") or "")
+        if not key:
+            continue
+        prev = pending.get(key)
+        if prev is None or _mail_notice_time(mail) >= _mail_notice_time(prev):
+            pending[key] = mail
+    blocks = []
+    for mail in pending.values():
+        item = _lap_mail_item(mail)
+        num = _lap_case_num(_mail_notice_blob(mail)) or item["id"]
+        lines = [
+            f"## lap-mail {num}",
+            f"- label: {item.get('label') or ''}",
+            f"- detail: {item.get('detail') or ''}",
+        ]
+        if item.get("mailUrl"):
+            lines.append(f"- mailUrl: {item['mailUrl']}")
+        if item.get("gusUrl"):
+            lines.append(f"- gusUrl: {item['gusUrl']}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def _attach_gus_notice_mail(items: list, mails: list[dict]) -> None:
     pending: dict[str, dict] = {}
     for mail in mails:

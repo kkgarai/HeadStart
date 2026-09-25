@@ -592,20 +592,19 @@ PLAN_PROMPT = (
     "Python already fetched: digest = this run's live OrgCS comments+emails+IR+related list+GUS on **open owned** cases only; "
     "inbox.txt = opened Slack leftovers + full unread mail bodies. "
     "You write every peeks.<caseNumber>.summary (4–8 sentences). Python does not. "
-    "You still decide Peek, keep/drop, Not opened vs Needs a reply, GUS rows, and ranks from those clips. "
+    "You still decide Peek, GUS rows, and ranks from the digest. Slack and Mail keep/drop is already done. "
     "Do not write todayPlan. Leave todayPlan as []. Today's plan is built after this analysis finishes. "
-    "Python does not classify Slack/Mail/GUS. Never Slack MCP. Never Gmail batch. Never body SOQL. Never related/GUS MCP. "
+    "Python does not rank cases or write Peek. Never Slack MCP. Never Gmail batch. Never body SOQL. Never related/GUS MCP. "
     "Who has the ball is last customer / last public in this digest, not an older sandbox-login beat. Need More Information / last ask is the customer → bucket watch, not Investigate on todayPlan. "
     "Pending Initial Response is case SLA. A 'will breach SLA in 30 minutes' mail is Needs us now until the public comment is on the case. Investigation SLA is the stored fields plus slamonitor mail. LAP uses requested start and end. Python does not mark overdue or approaching. "
-    "ONE Write of /tmp/plan-ai.json: peeks + ranks + slack + mail + gus, todayPlan [], aiAnalyzed true, sourcesAnalyzed true. "
-    "inboxReviewed true only after you classify every ## slack / ## mail clip. "
-    "gusReviewed true only after you classify ## gus / gusCandidates / IR / related list. "
+    "ONE Write of /tmp/plan-ai.json: peeks + ranks + gus, todayPlan [], aiAnalyzed true, sourcesAnalyzed true. Do not write slack or mail. "
+    "gusReviewed true only after you classify ## gus, ## lap, ## lap-mail, IR, and the related list. "
     "Empty inbox.txt is not Slack/Mail — clear unless gather slackFetchOk / mailFetchOk is true. "
     "gusFetchOk false is not GUS — clear. You classify Slack from clip + - reactions: — Python does not keep/drop. "
     "A failed tool is not a stop. Finish from the digest and inbox already on disk and still Write /tmp/plan-ai.json. "
     "If you are shown a failure list, you fix it in this run. Do not leave the error for someone else. "
     "Then stop. Reply: published. Do not a second write. "
-    "Do not skip a PLAN_SYSTEM rule. Peek every gather case. Classify every Slack, Mail, and GUS clip. "
+    "Do not skip a PLAN_SYSTEM rule. Peek every gather case. Classify every ## gus, ## lap, and ## lap-mail block. "
     "Use an opened Sev-1 channel name from the BRIEF. A case is in beforeYouLogOff or tomorrowFirst, never both."
 )
 
@@ -5667,7 +5666,7 @@ def repair_plan_prompt(fails: list[str]) -> str:
         "Read /tmp/plan-ai.json once. For a missing Peek, Read planner-digest.txt in this working directory. "
         "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
         "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
-        "Keep every other peek, rank, slack, mail, gus, and todayPlan row. "
+        "Keep every other peek, rank, and gus row. Leave todayPlan as []. Do not write slack or mail. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
         + lines
     )
@@ -5678,8 +5677,10 @@ def missing_plan_prompt() -> str:
         "You stopped before /tmp/plan-ai.json existed, so nothing can publish. "
         "That file is the page. Use the digest and inbox already on disk. "
         "Do not re-gather. Do not Slack, Gmail, or SOQL. "
-        "Write the complete /tmp/plan-ai.json now (Peek for every gather case, slack, mail, gus, todayPlan, "
-        "aiAnalyzed true, sourcesAnalyzed true). Then stop."
+        "Write the complete /tmp/plan-ai.json now (Peek for every gather case, gus, todayPlan [], "
+        "aiAnalyzed true, sourcesAnalyzed true). Do not write slack or mail. "
+        "Read planner-digest.txt in the working directory, every part, in order. "
+        "Do not Read /tmp/planner-digest.txt. Do not Read planner-inbox.txt. Then stop."
     )
 
 
@@ -6016,7 +6017,7 @@ Slack:
 
 Mail:
 - Drop done:true.
-- Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail.
+- Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail. Sandbox success is an operation-completed notice with no LAP case number. LAP-BlackTab-Bot mention mail is not in this file.
 - Drop meeting mail that only schedules, reschedules, cancels, or records accepted, declined, tentative, or maybe. Those already show on the calendar.
 - Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, that still needs a look.
 - Keep a case SLA mail from no.reply@salesforce.com whose subject is "Case <number> will breach SLA in 30 minutes" or "Action Required | SLA Missed". The body names the case, the Response Target, and the ask (accept and a public comment, or close the loop).
@@ -6137,110 +6138,8 @@ def install_today_plan(run_cli) -> None:
 
 
 def finish_plan_from_evidence() -> bool:
-    """Fill holes the model left, using this run's digest, then let publish proceed."""
-    gather: dict = {}
-    digest_fields: dict[str, dict[str, str]] = {}
-    try:
-        loaded = json.loads(pathlib.Path("/tmp/planner-gather.json").read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            gather = loaded
-    except (OSError, json.JSONDecodeError):
-        gather = {}
-    try:
-        digest_fields = _digest_case_fields(
-            pathlib.Path("/tmp/planner-digest.txt").read_text(encoding="utf-8")
-        )
-    except OSError:
-        digest_fields = {}
-    ai_path = pathlib.Path("/tmp/plan-ai.json")
-    ai: dict = {}
-    try:
-        loaded_ai = json.loads(ai_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_ai, dict):
-            ai = loaded_ai
-    except (OSError, json.JSONDecodeError):
-        ai = {}
-    if not gather and not digest_fields and not ai:
-        return False
-    peeks = ai.get("peeks") if isinstance(ai.get("peeks"), dict) else {}
-    cases = list(gather.get("cases") or [])
-    numbers = []
-    case_by: dict[str, dict] = {}
-    for row in cases:
-        if isinstance(row, dict):
-            num = str(row.get("caseNumber") or row.get("CaseNumber") or "").strip()
-            if num:
-                numbers.append(num)
-                case_by[num] = row
-    if not numbers:
-        numbers = list(digest_fields.keys())
-    for num in numbers:
-        spec = peeks.get(num) if isinstance(peeks.get(num), dict) else {}
-        summary = str(spec.get("summary") or "").strip()
-        if summary and not _is_stub_peek(summary):
-            peeks[num] = spec
-            continue
-        fields = digest_fields.get(num) or {}
-        if not fields and not summary:
-            row = case_by.get(num) or {}
-            label = str(row.get("label") or num)[:160]
-            status = str(row.get("status") or "open")[:40]
-            detail = str(row.get("detail") or "").strip()[:180]
-            spec = dict(spec)
-            spec["summary"] = (
-                f"Case {num} is {status}. "
-                f"The subject is {label}. "
-                + (f"{detail}. " if detail else "No newer thread line was in this run's digest. ")
-            )
-            spec.setdefault("chronology", [])
-            peeks[num] = spec
-            continue
-        spec = dict(spec)
-        spec["summary"] = _peek_from_digest(num, fields) if fields else summary
-        if not spec.get("chronology"):
-            spec["chronology"] = _chronology_from_digest(fields)
-        peeks[num] = spec
-    for cand in gather.get("slackCandidates") or []:
-        if not isinstance(cand, dict) or not cand.get("sev1Case"):
-            continue
-        num = str(cand.get("sev1Case") or "")
-        channel = str(cand.get("channel") or "").lstrip("#").strip()
-        spec = peeks.get(num) if isinstance(peeks.get(num), dict) else None
-        if not spec or len(channel) < 3:
-            continue
-        if channel.lower() not in str(spec.get("summary") or "").lower():
-            spec["summary"] = str(spec.get("summary") or "").rstrip(".") + f". Slack channel {channel} was opened."
-            peeks[num] = spec
-    ai["peeks"] = peeks
-    ai["aiAnalyzed"] = True
-    ai["sourcesAnalyzed"] = True
-    for key in (
-        "needsUsNow",
-        "followUpDue",
-        "stillWatching",
-        "quickWins",
-        "customerAskedMeeting",
-        "beforeYouLogOff",
-        "tomorrowFirst",
-    ):
-        if not isinstance(ai.get(key), list):
-            ai[key] = []
-    ai["tomorrowFirst"] = [row for row in (ai.get("tomorrowFirst") or [])]
-    if not merge_classified_inbox():
-        if not isinstance(ai.get("slack"), dict):
-            ai["slack"] = {"groups": []}
-        if not isinstance(ai.get("mail"), dict):
-            ai["mail"] = {"groups": []}
-        ai["inboxReviewed"] = False
-    if gather.get("gusFetchOk") is True:
-        ai["gusReviewed"] = True
-    if not isinstance(ai.get("gus"), dict):
-        ai["gus"] = {"groups": []}
-    try:
-        ai_path.write_text(json.dumps(ai, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        return False
-    return True
+    """Peek and aiAnalyzed come from the model. Do not fill them here."""
+    return False
 
 
 def publish_plan_inprocess(path: pathlib.Path) -> str:
@@ -11867,6 +11766,29 @@ def append_related_to_digest(seeded: dict) -> None:
     append_gus_blocks_to_digest(seeded)
 
 
+def append_lap_mail_to_digest(seeded: dict) -> None:
+    """Put opened LAP-BlackTab-Bot mail on the digest. The inbox file does not include it."""
+    mails = seeded.get("mailCandidates") if isinstance(seeded, dict) else None
+    if not isinstance(mails, list) or not mails:
+        return
+    try:
+        text = _sanitize_mod().lap_mail_digest(mails).strip()
+    except Exception:
+        return
+    if not text:
+        return
+    try:
+        prev = PLANNER_DIGEST_FILE.read_text(encoding="utf-8") if PLANNER_DIGEST_FILE.is_file() else ""
+    except OSError:
+        return
+    if "## lap-mail " in prev:
+        return
+    try:
+        PLANNER_DIGEST_FILE.write_text(prev.rstrip() + "\n\n" + text + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def append_case_holds_to_digest() -> None:
     try:
         holds = _sanitize_mod().load_case_holds()
@@ -11917,6 +11839,7 @@ def attach_clipped_activity(seeded: dict, evidence: dict) -> dict:
     inject_ir_related_into_digest(seeded)
     append_gus_blocks_to_digest(seeded)
     append_case_holds_to_digest()
+    append_lap_mail_to_digest(seeded)
     refreshed = write_planner_gather(evidence_from_seed(seeded))
     n_digest, n_filled = digest_activity_stats()
     gchars = 0
@@ -12956,10 +12879,14 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             code = 0
     ai_path = pathlib.Path("/tmp/plan-ai.json")
     has_ai = ai_path.is_file() and ai_path.stat().st_mtime >= (run_started - 2)
-    if not has_ai and not user_abort:
-        if finish_plan_from_evidence():
-            filled = True
-            append_plan_step(kind="log", label="Filled what the model left, from this run's clips.")
+    if not has_ai and not user_abort and not killed:
+        append_plan_step(kind="log", label="Analysis file missing. Asking the model to write it.")
+        try:
+            run_cli(prompt=missing_plan_prompt(), timeout_sec=4 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="The analysis rewrite could not start: " + clip(str(exc), 160))
+        has_ai = ai_path.is_file() and ai_path.stat().st_mtime >= (run_started - 2)
+        filled = has_ai
     if not user_abort and not killed:
         if prompt_too_long or flags.get("runner_down"):
             PLAN_STOP.clear()
@@ -12984,12 +12911,13 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         fails = list(LAST_CHECK_FAILS)
         append_plan_step(kind="log", label="Asking the model to fix the publish check")
         needs_analysis = any(
-            re.search(r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology):", f)
+            re.search(
+                r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology|when|meeting|bunch|closeout):",
+                f,
+            )
             for f in fails
         )
-        needs_today = any(
-            re.search(r"FAIL (today|when|meeting|bunch|closeout):", f) for f in fails
-        )
+        needs_today = any(re.search(r"FAIL today:", f) for f in fails)
         try:
             if needs_analysis or not needs_today:
                 run_cli(prompt=repair_plan_prompt(fails), timeout_sec=4 * 60)
