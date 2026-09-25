@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>engineer day planner</title>
+  <title>HeadStart</title>
   <script>
     (function () {
       try {
@@ -1970,7 +1970,7 @@
         <div class="who">
           <div class="who-mark" id="who-mark" aria-hidden="true">P</div>
           <div class="who-copy">
-            <h1 id="who">engineer day planner</h1>
+            <h1 id="who">HeadStart</h1>
             <p class="role" id="role"></p>
             <p class="mgr" id="mgr"></p>
           </div>
@@ -2787,7 +2787,7 @@
           + "</div>";
       }
 
-      document.title = (data.daypartLabel || "engineer day planner") + " · " + (data.name || "");
+      document.title = (data.daypartLabel || "HeadStart") + " · " + (data.name || "");
       (function stampDaypart() {
         var raw = String(data.daypart || "").toLowerCase().trim();
         var lab = String(data.daypartLabel || "").toLowerCase();
@@ -2806,7 +2806,7 @@
         whoMark.textContent = "";
         whoMark.hidden = true;
       }
-      document.getElementById("who").textContent = data.name || "engineer day planner";
+      document.getElementById("who").textContent = data.name || "HeadStart";
       var roleEl = document.getElementById("role");
       roleEl.textContent = data.title || "";
       roleEl.hidden = !data.title;

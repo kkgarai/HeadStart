@@ -284,7 +284,7 @@ def main() -> int:
     remove_launch_agent()
     remove_owned_files(skill)
     print("Native host removed.")
-    print("In Chrome, open chrome://extensions and remove Day Planner.")
+    print("In Chrome, open chrome://extensions and remove HeadStart.")
     print("Another copy of this extension on this Mac will need its installer again.")
     return 0
 

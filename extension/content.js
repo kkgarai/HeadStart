@@ -244,7 +244,7 @@ try {
 (function tabFlash() {
   if (window.top !== window) return;
   let timer = null;
-  let REAL_TITLE = "Day Planner";
+  let REAL_TITLE = "HeadStart";
   let flashMsg = "Notification";
   function isFlashTitle(t) {
     t = String(t || "").trim();

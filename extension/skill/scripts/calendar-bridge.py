@@ -2601,7 +2601,7 @@ def unpublished_page_html() -> bytes:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>engineer day planner</title>
+  <title>HeadStart</title>
   <script>
     (function () {
       try {
@@ -14016,7 +14016,7 @@ def write_native_host_manifests() -> None:
         return
     payload = {
         "name": NATIVE_HOST_NAME,
-        "description": "Start the engineer day planner local bridge",
+        "description": "Start the HeadStart local bridge",
         "path": str(launch),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{CHROME_EXTENSION_ID}/"],

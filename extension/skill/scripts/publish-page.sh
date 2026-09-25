@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the engineer day planner page into this skill folder (out/current.html).
+# Publish the HeadStart page into this skill folder (out/current.html).
 # Usage: publish-page.sh /path/to/data.json
 #    or: publish-page.sh -
 # Prefers 127.0.0.1:8765. If that port is taken by something else, uses the next

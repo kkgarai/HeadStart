@@ -1,4 +1,4 @@
-# Privacy — Day Planner
+# Privacy — HeadStart
 
 This extension runs a **local** planner page. It does not send your cases, mail, Slack, or calendar to the Chrome Web Store publisher.
 

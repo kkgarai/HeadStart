@@ -1,4 +1,4 @@
-# engineer day planner
+# HeadStart
 
 This folder is the skill packed inside the Chrome extension at `skill/`. Recipients **Load unpacked** the parent folder (the one with `manifest.json`) **or** install the Chrome Web Store listing. Do **not** copy or rsync this folder into `~/.cursor/skills/` or `~/.claude/skills/`.
 

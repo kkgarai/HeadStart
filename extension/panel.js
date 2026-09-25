@@ -1275,7 +1275,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 (function tabFlash() {
   var timer = null;
-  var REAL_TITLE = "Day Planner";
+  var REAL_TITLE = "HeadStart";
   var flashMsg = "Notification";
   function isFlashTitle(t) {
     t = String(t || "").trim();
