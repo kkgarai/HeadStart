@@ -321,7 +321,7 @@ input.addEventListener("input", () => {
 modelInput.addEventListener("change", async () => {
   const model = (modelInput.value || "").trim();
   if (!model) return;
-  await chrome.storage.local.set({ gatewayModel: model });
+  await chrome.storage.local.set({ gatewayModel: model, gatewayModelChosen: true });
 });
 if (runnerInput) {
   runnerInput.addEventListener("change", async () => {
