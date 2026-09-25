@@ -9,11 +9,11 @@ This folder is the skill packed inside the Chrome extension at `skill/`. Recipie
 Clone the repository, then load the folder that contains `manifest.json`. That folder is the clone root, not this `skill/` folder and not `extension/`.
 
 ```bash
-git clone https://github.com/kkgarai/headstart.git
-cd headstart
+git clone https://github.com/kkgarai/HeadStart.git
+cd HeadStart
 ```
 
-In Chrome, `chrome://extensions` → Developer mode → **Load unpacked** → choose `headstart`. First machine, once: double-click `Install Mac.command`, `Install Windows.bat`, or `Install Linux.sh` in that folder. The installer registers the native host for the browsers on that computer, and on a Mac it adds a login helper that does not keep the bridge alive after Chrome quits. If the clone is on the Desktop, in Documents, or in Downloads, the installer copies the bridge to a local snapshot and records the GitHub branch **Update** follows. After that, the toolbar starts the bridge. Do not copy this folder into a skills directory.
+In Chrome, `chrome://extensions` → Developer mode → **Load unpacked** → choose `HeadStart`. First machine, once: double-click `Install Mac.command`, `Install Windows.bat`, or `Install Linux.sh` in that folder. The installer registers the native host for the browsers on that computer, and on a Mac it adds a login helper that does not keep the bridge alive after Chrome quits. If the clone is on the Desktop, in Documents, or in Downloads, the installer copies the bridge to a local snapshot and records the GitHub branch **Update** follows. After that, the toolbar starts the bridge. Do not copy this folder into a skills directory.
 
 To remove the host, double-click `Uninstall Mac.command`, `Uninstall Windows.bat`, or `Uninstall Linux.sh` in that same folder. That stops this copy's bridge and removes the host registration, the Mac login helper, the snapshots, and the cache. It does not delete the clone. Then remove the extension in `chrome://extensions`. Another copy of this extension on the same computer needs its installer again.
 
