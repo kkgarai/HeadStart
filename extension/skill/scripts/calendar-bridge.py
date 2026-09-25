@@ -588,9 +588,8 @@ PLAN_PROMPT = (
     "Slack and Mail were already classified. Do not Read planner-inbox.txt in this pass. "
     "You summarize. Python did not shorten those files. "
     "Do not Read /tmp/plan.json. "
-    "Mandatory every run, no exception: OrgCS (threads + Initial Response + GUS related list), GUS (Support Contact, Follow, investigation SLA fields, LAP start/end), Slack, Calendar, Mail. Analyze all of them. "
-    "Python already fetched: digest = this run's live OrgCS comments+emails+IR+related list+GUS on **open owned** cases only; "
-    "inbox.txt = opened Slack leftovers + full unread mail bodies. "
+    "Mandatory every run, no exception: OrgCS (threads + Initial Response + GUS related list), GUS (Support Contact, Follow, investigation SLA fields, LAP, ## lap-mail), Calendar. "
+    "Python already fetched: digest = this run's live OrgCS comments+emails+IR+related list+GUS+## lap-mail on **open owned** cases. "
     "You write every peeks.<caseNumber>.summary (4–8 sentences). Python does not. "
     "You still decide Peek, GUS rows, and ranks from the digest. Slack and Mail keep/drop is already done. "
     "Do not write todayPlan. Leave todayPlan as []. Today's plan is built after this analysis finishes. "
@@ -599,9 +598,8 @@ PLAN_PROMPT = (
     "Pending Initial Response is case SLA. A 'will breach SLA in 30 minutes' mail is Needs us now until the public comment is on the case. Investigation SLA is the stored fields plus slamonitor mail. LAP uses requested start and end. Python does not mark overdue or approaching. "
     "ONE Write of /tmp/plan-ai.json: peeks + ranks + gus, todayPlan [], aiAnalyzed true, sourcesAnalyzed true. Do not write slack or mail. "
     "gusReviewed true only after you classify ## gus, ## lap, ## lap-mail, IR, and the related list. "
-    "Empty inbox.txt is not Slack/Mail — clear unless gather slackFetchOk / mailFetchOk is true. "
-    "gusFetchOk false is not GUS — clear. You classify Slack from clip + - reactions: — Python does not keep/drop. "
-    "A failed tool is not a stop. Finish from the digest and inbox already on disk and still Write /tmp/plan-ai.json. "
+    "gusFetchOk false is not GUS — clear. A ## lap-mail block means GUS is not clear. "
+    "A failed tool is not a stop. Finish from the digest already on disk and still Write /tmp/plan-ai.json. "
     "If you are shown a failure list, you fix it in this run. Do not leave the error for someone else. "
     "Then stop. Reply: published. Do not a second write. "
     "Do not skip a PLAN_SYSTEM rule. Peek every gather case. Classify every ## gus, ## lap, and ## lap-mail block. "
@@ -5667,6 +5665,7 @@ def repair_plan_prompt(fails: list[str]) -> str:
         "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
         "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
         "Keep every other peek, rank, and gus row. Leave todayPlan as []. Do not write slack or mail. "
+        "If the digest has a ## lap-mail block, the gus row label includes that LAP case number. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
         + lines
     )
@@ -5830,12 +5829,33 @@ TODAY_PLAN_SYSTEM = """
 Build Today's plan only. Do not Read files. Do not rewrite /tmp/plan-ai.json.
 Write /tmp/plan-today.json once: {"todayPlan":[...]}.
 Each row: id, label, minutes, kind. Case windows also get caseNumber.
-Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row), Slack and Mail only if the brief still has leftovers, promised close near logout (id plan-close).
+Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
 Short breaks: 10–15 minutes, kind break, id plan-break-1 then plan-break-2. At most 4 a day. At least 45 minutes of other work between them. Never within 45 minutes before or after Breakfast, Lunch, Dinner, or a Snack already on the calendar. Not the last block of the shift. If freeMinutes is at least 180 and a break fits that gap, add one.
 Do not write an Open row. Leftover holes stay empty. The page draws them.
 End of Day: no Take New Cases and no short break. Named work only if the brief still has something owed. Empty todayPlan is allowed.
 Do not invent a meal. Do not copy Google meetings into todayPlan. Then stop. Reply: planned.
 """.strip()
+
+
+def _inbox_leftover_counts() -> tuple[int, int]:
+    """Kept Slack and Mail rows from the inbox pass. The clock brief lists these counts."""
+    try:
+        loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+    if not isinstance(loaded, dict):
+        return 0, 0
+
+    def count(block: object) -> int:
+        if not isinstance(block, dict):
+            return 0
+        n = 0
+        for group in block.get("groups") or []:
+            if isinstance(group, dict):
+                n += len(group.get("items") or [])
+        return n
+
+    return count(loaded.get("slack")), count(loaded.get("mail"))
 
 
 def today_plan_user_prompt() -> str:
@@ -5869,6 +5889,9 @@ def today_plan_user_prompt() -> str:
             if len(num) >= 6:
                 nums.append(num)
         lines.append(f"{key}: {', '.join(nums[:8]) or 'none'}")
+    slack_n, mail_n = _inbox_leftover_counts()
+    lines.append(f"slack leftovers: {slack_n}")
+    lines.append(f"mail leftovers: {mail_n}")
     blob = "\n".join(lines)
     if len(blob) > 2500:
         blob = blob[:2499].rstrip() + "…"
@@ -12912,7 +12935,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         append_plan_step(kind="log", label="Asking the model to fix the publish check")
         needs_analysis = any(
             re.search(
-                r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology|when|meeting|bunch|closeout):",
+                r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology|when|meeting|bunch|closeout|gus):",
                 f,
             )
             for f in fails

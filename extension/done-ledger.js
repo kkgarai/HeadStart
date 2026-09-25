@@ -57,6 +57,8 @@ function edpPruneLedgerKeys(keys, nowMs, tzname) {
       if (ms < idCut) return;
     } else if (edpIsDurableDoneKey(k)) {
       if (ms < durableCut) return;
+      const slotLabel = k.indexOf("slot:") === 0 ? k.split(":").slice(2).join(":").trim().toLowerCase() : "";
+      if (/^(needs us now|follow-?ups?|take new cases|new cases|short break|open)$/.test(slotLabel)) return;
     } else {
       return;
     }
@@ -166,7 +168,8 @@ function edpItemKeys(item) {
   const start = String(item.startStamp || "").trim();
   const lab = String(item.label || "").trim().toLowerCase().replace(/\s+/g, " ");
   const hasCase = keys.some((k) => k.indexOf("case:") === 0);
-  if (start && lab && !hasCase) keys.push("slot:" + start + ":" + lab);
+  const genericSlot = /^(needs us now|follow-?ups?|take new cases|new cases|short break|open)$/.test(lab);
+  if (start && lab && !hasCase && !genericSlot) keys.push("slot:" + start + ":" + lab);
   const mid = String(item.messageId || item.gmailId || "").trim();
   if (/^[0-9a-f]{10,}$/i.test(mid)) keys.push("mailid:" + mid.toLowerCase());
   const mailRow = ident.match(/^mail-([0-9a-f]{10,})$/i);

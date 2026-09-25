@@ -59,31 +59,17 @@ Search hits are plumbing. **This pass writes the case analysis and the GUS rows.
    **Keep out of Needs us now:** **Status=Solution Provided** and **Status=Need More Information / NMI** (waiting on the customer — never `"bucket": "now"` / `needsUsNow`, even if the next step looks like ours), promised EOD/Friday close, quiet Sev-2, “I need a list.” Those wait statuses are Follow-up due, Still watching, Quick wins, or Before you log off. **Status=New and Status=Working are never Still watching when no customer-facing follow-up has gone out.** New with no public response, and Working with no public update, are `followUpDue` unless they are Needs us now or a promised close (`beforeYouLogOff`). A case followed up yesterday is not `followUpDue` until the business-day test trips. You keep Solution Provided and Need More Information out of Needs us now. Python does not move a case. Empty is correct when nothing is burning.
    **DNS/cert is not a keep-out.** Rank it like any other case. Quiet close-out with no heat → Follow-up due / Still watching. Customer back with a burning or urgent ask → Needs us now.
 
-2. **Slack leftovers.** Candidates are in gather. **`/tmp/planner-inbox.txt` is the open** — Python already read leftover DMs/mention threads (`detailed`, plus `slack_get_reactions`) so this CLI never dumps a full history. **You** still keep, drop, and bucket from those `clip:` and `- reactions:` lines. Python does **not** keep/drop. Never Slack MCP. Never `read_channel` a public `C…` leftover. Never `slack_get_reactions` on this CLI.
-   **Drop gather rows with `done: true`.** They were marked Done on the page. Do not keep them. Do not put them on groups or todayPlan.
-   **A leftover is something YOU still owe.** Python only fetches a channel thread when you were @mentioned or you wrote in it. Belonging to the channel is not enough, so a `#help-*` / `#support-*` / `#ask-*` thread you never joined is not in the clips. A channel thread you started, and a channel thread you joined by replying, is in the clips, including later replies that never @ you. Judge that whole thread. Public shouts with no @ you are **drop**.
-   **Investigations: GUS Bot and email.** GUS Bot's DM is Work Notifier. Each post is one investigation: a W-number, then the change, then an attachment with Subject, Status, Assignee, and Sprint. The subject often names the OrgCS case. Use that post, and any email about that same W-number, as the investigation update. Do not drop GUS Bot because it is a bot. Status to More Info Reqd from Support is the ball on support. A Closed status or a Closing Summary means that investigation is done. `#SEVERITY_REDUCED` is a severity change. Assignee, product tag, and scrum-team changes are the update. **This bot does not send LAP updates, and it is not the investigation SLA.**
-   **Investigation SLA is the PSBot group conversation.** PSBot creates that conversation with this engineer and the current manager, and posts there. The other person in the conversation is the manager on the header. A PSBot post in any other channel is not this SLA. Drop it.
-   - `WARNING: Severity N investigation W-… has an SLO due at <time>`. The ask is a Chatter update. Subject, status, and case count are in the post.
-   - `ALERT: Severity N investigation W-… is Out of SLO.` Same ask. This one is already late.
-   - `Investigation W-… (Sev N, status) is in the long running category at N days old` and names the Support Contact. Status Investigating means ask T&P for an update. Status More Info Reqd from Support means gather what they asked and update the investigation.
-   **Case SLA on Slack is keep.** A Slackbot file titled `ALERT! 15 Minute SLA Warning` says `Case <number> is 15 minutes away from missing SLA`. A person DM that says meet the SLA or the case is about to breach, and names a case number, is the same signal. That owned case is Needs us now until the action is done. Drop `SLA REMINDER - Schedule started` rota pings.
-   **Use `- reactions:`.** Emoji on the leftover (and in `clip:`) are part of the open. Closing reactions (`ack`, ✅ / `white_check_mark`, 👀 / `eyes` as acknowledgment) **can drop even when `lastHumanIsMe` is false** — that is your call. An unanswered ask with no closing reaction is keep. Do not invent a reply because there is no prose if they already closed it with a reaction.
-   **Keep when `lastHumanIsMe` is false** unless you drop it from reactions / FYI / already handled. Search `From` of you is **not** a self-DM and is **not** enough to drop.
-   **You drop:** `lastHumanIsMe` is true / last human line in `clip:` is you; closing reactions; FYI / huddle over; they thanked you and will update the customer / accepted the preferred way. A trailing 404 / “newer article?” after they already accepted is still **drop**.
-   **DM title is `peer`.** Label `{peer} (DM)` — the other person in `openedClip` / gather `peer`. Never gather `name`, even when they sent the last search hit.
-   **You bucket:** **Not opened** = `unread: true` and still yours (rare if `openedClip` exists — then it is opened). **Needs a reply** = opened, and **you** still owe a reply. Skip STORM and broadcast FYI. The PSBot group conversation with the current manager is not a skip. **Never** Slack MCP on this CLI.
-   **Never stamp `"empty": "Slack — clear"` because inbox.txt was empty.** That file is empty when Python did not open leftovers (`gather.slackFetchOk` is false or missing with no `## slack` blocks) — omit `inboxReviewed` (or set false) and do not write Slack — clear. Python restores last classified Slack. Clear is allowed **only when** `slackFetchOk` is true and every `## slack` clip was a drop.
+2. **Slack leftovers — already classified.** The inbox pass wrote `/tmp/plan-inbox.json`. Do not read `planner-inbox.txt`. Do not write `slack` in this file. Do not stamp Slack — clear here. A kept Sev-1 or swarm channel name is on the BRIEF; use that name in Peek. Never Slack MCP.
+   A Done case stays Done. Do not put it on todayPlan as open work. GUS Bot Work Notifier and a PSBot SLO post are GUS rows. LAP updates are `## lap-mail`, not that bot. A case named in an SLA warning (`15 Minute SLA Warning`, or a DM that the case will breach) is Needs us now until that action is done.
 
-3. **Mail.** Unread inbox bodies are in `/tmp/planner-inbox.txt` (`## mail …` + `clip:`). **You** keep or drop each one from the body, then bucket **Not opened** vs **Needs a reply**. **Never** call `get_gmail_messages_content_batch`. Drop gather rows with `done: true`. Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success-operation mail. Drop meeting mail that only schedules, reschedules, cancels, or records accepted, declined, tentative, or maybe. Those already show on the calendar. Keep Chatter / GUS / Black Tab mention or ACTION REQUIRED that still needs a look. Keep `no.reply@salesforce.com` when the subject is `Case <number> will breach SLA in 30 minutes` (accept the case, In Progress, a meaningful public comment, Response Target in the body) or `Action Required | SLA Missed` (the body names the case and asks to close the loop). Keep email about an investigation you support or follow; that mail is an investigation update, alongside GUS Bot. `LAP-BlackTab-Bot mentioned you in a post` is not in this inbox file. Each one is a `## lap-mail` block in the digest. Black Tab sandbox success is an operation-completed notice with no LAP case number. Drop `SLA ROTA` roster mail. Investigation SLA is PSBot, not this mail. Case-thread Chatter that repeats the digest → drop.
-   **Never stamp `"empty": "Mail — clear"` because inbox.txt had no `## mail` blocks** unless `gather.mailFetchOk` is true and the file does not say mail clips were omitted. A line `- mail clips: N` means classify all N. Fetch failed, or mail was cut off, → `inboxReviewed` false, no Mail — clear. A line `slack clips shown: A of B` means you did not see every Slack clip → do not stamp Slack — clear.
+3. **Mail — already classified.** The inbox pass wrote `/tmp/plan-inbox.json`. Do not read `planner-inbox.txt`. Do not write `mail` in this file. Do not stamp Mail — clear here. A case SLA mail that names an owned case (`will breach SLA in 30 minutes`, `Action Required | SLA Missed`) is Needs us now until that ask is done. `LAP-BlackTab-Bot mentioned you` is a `## lap-mail` block in the digest, not an inbox clip.
 
 3b. **GUS + SLA.** Candidates are gather `gusCandidates` plus digest `## gus` / `## sla`, plus GUS Bot Work Notifier clips and the PSBot group conversation with the current manager. **You** keep, drop, and bucket. Never GUS MCP. Drop `done: true`. Investigation SLA is the stored fields on the work row (`- out of sla:`, `- sla:`, `- sla warning sent:`, `- sla violations:`, `- due:`). You read those values. Python does not mark overdue or approaching. A PSBot WARNING (SLO due), ALERT (Out of SLO), SLO-due list, or long-running note, for a W-number you support or follow, is a GUS row that needs a look now. GUS Bot and investigation email are the update, not that SLA. Cover OrgCS **Initial Response** pending on owned cases. **GUS Bot and GUS Chatter:** every Work Notifier post and every GUS Chatter post is a GUS row, even when you are not the Support Contact and do not Follow that work. Do not stamp GUS — clear when either post is present. Do not also put that post in Slack. **Investigation Chatter:** only an Investigation where you are the Support Contact (`role` contains `support-contact`) or you Follow it (`role` contains `follow`). If that work row has `- chatter:`, list it in the GUS section with the status and that Chatter. `- chatter:` is that investigation's own Chatter thread (posts and tracked status changes). Do not invent an update from `- modified:` or `- status:` alone. Do not list an investigation you neither follow nor own as Support Contact. **List every LAP** from `## lap` or a candidate with role `lap` in the GUS section, with status, requested `- start:` and `- end:`, and Chatter when present. A LAP has no SLA. You consider those dates. LAP status changes arrive as `## lap-mail` in the digest, not as GUS Bot posts and not as an inbox clip. Write one GUS row per `## lap-mail` block. The label includes the LAP case number and the status. Submitted for approval is in review. `Automatic Org Value Update Successfully` means the limit was applied. A passed end date with Manual Revert Needed means you own the revert or the close. Do not stamp GUS — clear while any `## lap-mail` block is present. Zero keepers + `gusFetchOk` true and no `## lap-mail` → `"empty": "GUS — clear"`. `gusFetchOk` false → no GUS — clear, `gusReviewed` false.
    Calendar/Assembled is gather `meetings[]` / `assembledSchedule`. Do not copy those meetings into `todayPlan`. `meetings[]` is a fresh Google Calendar fetch this run. Do not invent meetings. `calendarFetchOk` false → do not invent a shift from 8–5.
 
 4. **Today's plan is not this pass.** Write `"todayPlan": []`. Do not invent clock rows, Open rows, or meals here. A later pass writes the clock.
 
-5. **Write `/tmp/plan-ai.json` ONCE.** Include `aiAnalyzed: true`, `sourcesAnalyzed: true`, `peeks` for **every** gather caseNumber, rank lists, `"todayPlan": []`, and `gus`. Do not write `slack` or `mail` in this file. If gather `name` is set, do not `getUserInfo`. `gusReviewed: true` **only after** GUS/IR/related-list classification. Zero GUS keepers → `"empty": "GUS — clear"` **only when** `gusFetchOk` is true. Missing `## gus` after a failed fetch is **not** zero keepers. `needsUsNow: []` still keeps the heading. `followUpDue: []` still keeps the heading. Then stop.
+5. **Write `/tmp/plan-ai.json` ONCE.** Include `aiAnalyzed: true`, `sourcesAnalyzed: true`, `peeks` for **every** gather caseNumber, rank lists, `"todayPlan": []`, and `gus`. Do not write `slack` or `mail` in this file. If gather `name` is set, do not `getUserInfo`. `gusReviewed: true` **only after** GUS/IR/related-list/`## lap-mail` classification. Zero GUS keepers → `"empty": "GUS — clear"` **only when** `gusFetchOk` is true and the digest has no `## lap-mail` block. A `## lap-mail` block is a GUS row. Missing `## gus` after a failed fetch is **not** zero keepers. `needsUsNow: []` still keeps the heading. `followUpDue: []` still keeps the heading. Then stop.
 
 ## Do not (this is what kills the run)
 
@@ -106,7 +92,7 @@ If gather is **missing**, MCP-gather once, still write `/tmp/plan-ai.json` only.
 
 ## MCP arguments
 
-- This CLI classifies from gather / digest / `/tmp/planner-inbox.txt`. Do not Slack-read, Gmail-batch, body-SOQL, or GUS-query.
+- This CLI classifies cases and GUS from the gather and the digest. Slack and Mail were already classified. Do not read `planner-inbox.txt`. Do not Slack-read, Gmail-batch, body-SOQL, or GUS-query.
 - Never `Case.Priority`. Urgency is `Severity_Level__c` only.
 - Live Omni is the Chrome extension, not this gather.
 
@@ -134,7 +120,6 @@ Shape only. Every id, caseNumber, label, and `todayPlan` row is copied from **th
 {
   "aiAnalyzed": true,
   "sourcesAnalyzed": true,
-  "inboxReviewed": true,
   "gusReviewed": true,
   "name": "displayName from getUserInfo if gather name was blank",
   "title": "title",
@@ -158,26 +143,6 @@ Shape only. Every id, caseNumber, label, and `todayPlan` row is copied from **th
   "beforeYouLogOff": [],
   "tomorrowFirst": [],
   "todayPlan": [],
-  "slack": {
-    "groups": [
-      {
-        "title": "Needs a reply",
-        "items": [
-          { "id": "<gather slack id>", "kind": "slack", "label": "…", "detail": "…", "slackUrl": "https://…", "channelId": "D…", "unread": false, "slackBucket": "reply", "lastHumanIsMe": false }
-        ]
-      }
-    ]
-  },
-  "mail": {
-    "groups": [
-      {
-        "title": "Needs a reply",
-        "items": [
-          { "id": "<gather mail id>", "kind": "mail", "label": "…", "detail": "…", "mailUrl": "https://mail.google.com/…" }
-        ]
-      }
-    ]
-  },
   "gus": {
     "groups": [
       {

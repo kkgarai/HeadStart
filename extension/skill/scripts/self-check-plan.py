@@ -206,6 +206,7 @@ def _check_model_rules(data: dict, gather: dict, fails: list[str]) -> None:
     plan = data.get("todayPlan")
     rows = [r for r in plan if isinstance(r, dict)] if isinstance(plan, list) else []
     eod = str(gather.get("daypart") or "").strip().lower() == "eod"
+    _check_lap_mail(data, fails)
     if not assembled or free < 60:
         return
     if not rows:
@@ -236,6 +237,39 @@ def _check_model_rules(data: dict, gather: dict, fails: list[str]) -> None:
             fails.append(
                 f"FAIL sev1: #{num} channel was opened and is missing from that case's Peek"
             )
+
+def _check_lap_mail(data: dict, fails: list[str]) -> None:
+    """Publish fails when a digest LAP mail has no GUS row."""
+    try:
+        digest = pathlib.Path("/tmp/planner-digest.txt").read_text(encoding="utf-8")
+    except OSError:
+        return
+    lap_nums = []
+    for num in re.findall(r"(?m)^## lap-mail\s+(\d{5,})\s*$", digest):
+        if num not in lap_nums:
+            lap_nums.append(num)
+    if not lap_nums:
+        return
+    gus_bits = []
+    gus = data.get("gus")
+    if isinstance(gus, dict):
+        gus_bits.append(json.dumps(gus))
+    for sec in data.get("sections") or []:
+        if isinstance(sec, dict) and re.match(r"^gus\b", str(sec.get("title") or ""), re.I):
+            gus_bits.append(json.dumps(sec))
+    gus_blob = " ".join(gus_bits)
+    if re.search(r"gus\s*[—-]\s*clear", gus_blob, re.I) or not gus_blob.strip():
+        fails.append(
+            "FAIL gus: digest has ## lap-mail but GUS is clear — write one GUS row per block"
+        )
+        return
+    missing_lap = [num for num in lap_nums if num not in gus_blob]
+    if missing_lap:
+        fails.append(
+            "FAIL gus: ## lap-mail missing a GUS row for "
+            + ", ".join(missing_lap[:6])
+            + " — label must include the LAP case number"
+        )
 
 
 def check(data: dict) -> tuple[list[str], list[str]]:

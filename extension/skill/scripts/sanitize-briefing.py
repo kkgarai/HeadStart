@@ -3055,7 +3055,7 @@ def prune_done_key_map(keys: object, now_ms: int | None = None, tzname: str = ""
             if ms < id_cut:
                 continue
         elif is_durable_done_key(name):
-            if ms < durable_cut:
+            if ms < durable_cut or _generic_slot_key(name):
                 continue
         else:
             continue
@@ -3064,6 +3064,20 @@ def prune_done_key_map(keys: object, now_ms: int | None = None, tzname: str = ""
         kept = sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:DONE_MAX_KEYS]
         out = dict(kept)
     return out
+
+
+_GENERIC_SLOT_LABEL = re.compile(
+    r"^(needs us now|follow-?ups?|take new cases|new cases|short break|open)$",
+    re.I,
+)
+
+
+def _generic_slot_key(name: str) -> bool:
+    """A shared clock label must not stay Done for 21 days and strike the next row in that hole."""
+    if not str(name).startswith("slot:"):
+        return False
+    label = str(name).split(":", 2)[-1].strip().lower()
+    return bool(_GENERIC_SLOT_LABEL.match(label))
 
 
 def _norm_done_url(raw: object) -> str:
@@ -3116,7 +3130,7 @@ def item_done_keys(it: dict) -> list[str]:
     # Case rows stay on case:. A shared label ("Needs Us Now") must not
     # complete whichever case the next run places in that clock slot.
     has_case = any(k.startswith("case:") for k in keys)
-    if start and lab and not has_case:
+    if start and lab and not has_case and not _GENERIC_SLOT_LABEL.match(lab):
         keys.append("slot:" + start + ":" + lab)
     cid = str(it.get("channelId") or it.get("slackChannel") or "").strip()
     ts = str(it.get("ts") or it.get("threadTs") or it.get("message_ts") or "").strip()
@@ -4849,8 +4863,6 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
             slot = _take_gap(
                 gaps, max(10, need - shrink), occupied, after=after_at, avoid_buffer=avoid_buffer
             )
-        if not slot:
-            slot = _take_partial_gap(gaps, need, occupied, after=after_at)
         if not slot:
             return False
         used_mins = max(10, int((slot[1] - slot[0]).total_seconds() // 60))
