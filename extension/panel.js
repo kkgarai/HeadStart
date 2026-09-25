@@ -713,9 +713,10 @@ async function loadModels(token) {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not list models");
-    const saved = await storedModel();
-    const chosen = fillModelSelect(body.models || [], saved, body.default || "");
-    if (chosen) await persistModel(chosen);
+    const stored = await chrome.storage.local.get(["gatewayModel", "gatewayModelChosen"]);
+    const pick = stored.gatewayModelChosen ? stored.gatewayModel || "" : "";
+    const chosen = fillModelSelect(body.models || [], pick, body.default || "");
+    if (chosen && !stored.gatewayModelChosen) await persistModel(chosen);
     setTokenMsg("");
     return "";
   } catch (err) {
@@ -1213,6 +1214,7 @@ tokenInput.addEventListener("input", () => {
 modelInput.addEventListener("change", async () => {
   const model = (modelInput.value || "").trim();
   if (!model) return;
+  await chrome.storage.local.set({ gatewayModelChosen: true });
   await persistModel(model);
 });
 if (runnerInput) {

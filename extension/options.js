@@ -232,9 +232,10 @@ async function loadModels(token) {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not list models");
-    const stored = await chrome.storage.local.get(["gatewayModel"]);
-    const chosen = fillModelSelect(body.models || [], stored.gatewayModel || "", body.default || "");
-    if (chosen) await chrome.storage.local.set({ gatewayModel: chosen });
+    const stored = await chrome.storage.local.get(["gatewayModel", "gatewayModelChosen"]);
+    const pick = stored.gatewayModelChosen ? stored.gatewayModel || "" : "";
+    const chosen = fillModelSelect(body.models || [], pick, body.default || "");
+    if (chosen && !stored.gatewayModelChosen) await chrome.storage.local.set({ gatewayModel: chosen });
     setMsg("");
   } catch (err) {
     resetModelSelect("Could not load models");
