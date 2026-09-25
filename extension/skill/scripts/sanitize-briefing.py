@@ -1249,6 +1249,27 @@ def _ranked_case_sections(data: dict) -> dict:
     return found
 
 
+def _gather_case_row(num: str) -> dict:
+    """A ranked case that was not already a card. The model chose the bucket."""
+    gather = _load_planner_gather()
+    src = {}
+    for row in gather.get("cases") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("caseNumber") or row.get("CaseNumber") or "") == num:
+            src = row
+            break
+    return {
+        "id": f"case-{num}",
+        "kind": "case",
+        "caseNumber": num,
+        "label": src.get("label") or f"#{num}",
+        "detail": src.get("detail") or "",
+        "status": src.get("status") or "",
+        "caseUrl": src.get("caseUrl") or "",
+    }
+
+
 def apply_ai_case_buckets(data: dict) -> None:
     """Peek ranking is the Needs us now / Follow-up due / Still watching split."""
     if not isinstance(data, dict):
@@ -1310,6 +1331,20 @@ def apply_ai_case_buckets(data: dict) -> None:
         if not dest:
             continue
         buckets[dest].append(it)
+    placed = {_case_num(it) for rows in buckets.values() for it in rows if _case_num(it)}
+    placed.update(close_only)
+    for name, key in (
+        ("now", "needsUsNow"),
+        ("follow", "followUpDue"),
+        ("watch", "stillWatching"),
+        ("meeting", "customerAskedMeeting"),
+        ("quick", "quickWins"),
+    ):
+        for num in _ai_num_list(data, key) or []:
+            if not num or num in placed:
+                continue
+            buckets[name].append(_gather_case_row(num))
+            placed.add(num)
 
     def stamp(it: dict, prefix: str) -> None:
         num = _case_num(it)

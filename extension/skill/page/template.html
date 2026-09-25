@@ -3968,7 +3968,11 @@
         var isPlan = bandOf(sec) === "plan";
         var when = itemWhen(item);
         if (!when) {
-          when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
+          if (gusSectionTitle(sec && sec.title) || String(item.kind || "").toLowerCase() === "gus" || item.gusBot === true) {
+            when = "GUS";
+          } else {
+            when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
+          }
         }
         var rawLabel = item.gusBot ? plainGus(item.label) : item.label;
         var labelText = prettyName(isPlan ? String(rawLabel || "").replace(/\/case-gho/gi, "GEO handover") : punchline(rawLabel));
