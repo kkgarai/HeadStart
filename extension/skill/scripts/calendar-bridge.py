@@ -5055,21 +5055,24 @@ def evidence_from_seed(seeded: dict) -> dict:
             meetings = []
             append_plan_step(kind="log", label="Primary calendar fetch failed · " + seeded["calendarFetchError"])
     clock = _gather_plan_clock(seeded, meetings)
-    forget_prior_fetches(seeded)
-    try:
-        fill_slack_leftovers(seeded)
-    except Exception as exc:
-        seeded["slackFetchOk"] = False
-        seeded["slackFetchError"] = clip(str(exc), 180)
-        seeded["slackCandidates"] = []
-        append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
-    try:
-        fill_mail_leftovers(seeded)
-    except Exception as exc:
-        seeded["mailFetchOk"] = False
-        seeded["mailFetchError"] = clip(str(exc), 180)
-        seeded["mailCandidates"] = []
-        append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
+    if seeded.get("_inboxOpened") is not True:
+        forget_prior_fetches(seeded)
+        try:
+            fill_slack_leftovers(seeded)
+        except Exception as exc:
+            seeded["slackFetchOk"] = False
+            seeded["slackFetchError"] = clip(str(exc), 180)
+            seeded["slackCandidates"] = []
+            append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
+        try:
+            fill_mail_leftovers(seeded)
+        except Exception as exc:
+            seeded["mailFetchOk"] = False
+            seeded["mailFetchError"] = clip(str(exc), 180)
+            seeded["mailCandidates"] = []
+            append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
+        seeded["_inboxOpened"] = True
+        seeded["_mailFetchTried"] = True
     def _slim_cand(row: dict, keys: tuple[str, ...]) -> dict:
         out = {}
         for k in keys:
@@ -9366,6 +9369,35 @@ def _orgcs_identity_file() -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+_MD_LINK_RE = re.compile(r"^\[([^\]]+)\]\(https://[^)]+\)$")
+
+
+def _unwrap_sf_value(val):
+    if isinstance(val, str):
+        match = _MD_LINK_RE.match(val.strip())
+        return match.group(1) if match else val
+    if isinstance(val, dict):
+        return {key: _unwrap_sf_value(item) for key, item in val.items()}
+    if isinstance(val, list):
+        return [_unwrap_sf_value(item) for item in val]
+    return val
+
+
+def _soql_record_list(obj: object) -> list | None:
+    if not isinstance(obj, dict):
+        return None
+    records = obj.get("records")
+    if isinstance(records, list):
+        return records
+    meta = obj.get("metadata")
+    if isinstance(meta, dict) and isinstance(meta.get("records"), list):
+        return meta["records"]
+    inner = obj.get("result")
+    if isinstance(inner, dict):
+        return _soql_record_list(inner)
+    return None
+
+
 def parse_soql_records(text: str) -> list:
     raw = (text or "").strip()
     if not raw:
@@ -9382,14 +9414,10 @@ def parse_soql_records(text: str) -> list:
                 return []
         else:
             return []
-    if isinstance(obj, dict):
-        records = obj.get("records")
-        if isinstance(records, list):
-            return [row for row in records if isinstance(row, dict)]
-        inner = obj.get("result")
-        if isinstance(inner, dict) and isinstance(inner.get("records"), list):
-            return [row for row in inner["records"] if isinstance(row, dict)]
-    return []
+    records = _soql_record_list(obj)
+    if not isinstance(records, list):
+        return []
+    return [_unwrap_sf_value(row) for row in records if isinstance(row, dict)]
 
 
 def parse_omni_presence(text: str) -> tuple[str, list]:
@@ -11279,10 +11307,8 @@ def gus_soql(soql: str) -> list:
     try:
         text = mcp_call_named(GUS_MCP_NAMES, "query_gus_records", {"soql": soql}, timeout=28)
         recs = parse_soql_records(text)
-        if recs:
-            return recs
         raw = str(text or "")
-        if re.search(r'"records"\s*:\s*\[', raw) or re.search(r'"totalSize"\s*:', raw):
+        if recs or re.search(r'"total_count"\s*:|"totalSize"\s*:', raw):
             return recs
     except Exception as exc:
         last = exc
