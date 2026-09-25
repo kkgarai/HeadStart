@@ -10039,7 +10039,7 @@ def _apply_planner_shape(payload: dict, shape: str, effort: str) -> None:
 def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, str]:
     payload = {
         "model": model_id,
-        "max_tokens": 16,
+        "max_tokens": 2048,
         "messages": [{"role": "user", "content": "Reply with ok"}],
     }
     _apply_planner_shape(payload, shape, _planner_effort(model_id, payload))
@@ -10064,15 +10064,19 @@ def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, 
 
 
 def discover_model_shape(token: str, model_id: str) -> str:
-    """One planner request for every model. A model that rejects it stays off the list."""
+    """Try the planner request shapes. Keep the first one this model accepts."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, _body = _probe_gateway_message(token, model_id, "plain")
-    if status in (401, 403):
-        raise RuntimeError("Gateway rejected the token while checking models")
-    shape = "plain" if status == 200 else "no"
+    shape = "no"
+    for candidate in ("plain", "adaptive", "enabled"):
+        status, _body = _probe_gateway_message(token, model_id, candidate)
+        if status in (401, 403):
+            raise RuntimeError("Gateway rejected the token while checking models")
+        if status == 200:
+            shape = candidate
+            break
     with _MODEL_SHAPE_LOCK:
         _MODEL_SHAPE[model_id] = shape
     return shape
