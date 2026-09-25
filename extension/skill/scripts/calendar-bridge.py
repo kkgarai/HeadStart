@@ -11886,13 +11886,22 @@ def attach_clipped_activity(seeded: dict, evidence: dict) -> dict:
     return refreshed
 
 
+def orgcs_username(email: str) -> str:
+    """OrgCS Username is the mailbox name plus @orgcs.com."""
+    text = (email or "").strip().replace("'", "")
+    if "@" not in text:
+        return ""
+    local = text.split("@", 1)[0].strip()
+    if not local:
+        return ""
+    return local + "@orgcs.com"
+
+
 def fetch_prompt_for_ids(ids: list[str]) -> str:
-    email = resolve_engineer_email().replace("'", "")
-    if "@" not in email:
-        email = ""
+    username = orgcs_username(resolve_engineer_email())
     user_query = (
-        "SELECT Id FROM User WHERE Email = '%s' OR Username = '%s' LIMIT 5" % (email, email)
-        if email
+        "SELECT Id FROM User WHERE Username = '%s' LIMIT 1" % username
+        if username
         else "SELECT Id FROM User WHERE Username LIKE '%@orgcs.com' AND IsActive = true LIMIT 5"
     )
     return (
