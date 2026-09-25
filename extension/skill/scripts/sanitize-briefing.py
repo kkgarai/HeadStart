@@ -2546,7 +2546,7 @@ def ensure_gus_bot_rows(data: dict) -> None:
                 continue
             blob = " ".join(
                 str(row.get(key) or "")
-                for key in ("label", "channel", "from", "peer", "detail", "openedClip")
+                for key in ("label", "channel", "from", "peer", "detail", "snippet", "openedClip")
             )
             if row.get("gusBot") is not True and not re.search(
                 r"work notifier|gus bot|gus chatter|chatter feed", blob, re.I
