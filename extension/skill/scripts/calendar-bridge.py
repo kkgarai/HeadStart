@@ -582,10 +582,10 @@ SECRET_RE = re.compile(
 )
 PLAN_PROMPT = (
     "PLAN_SYSTEM is loaded. The BRIEF is an index only. "
-    "Full text is planner-digest.txt and planner-inbox.txt in this working directory "
-    "(also /tmp/planner-digest.txt and /tmp/planner-inbox.txt). "
-    "You decide: one Read of a file, or forward chunks if one Read would overload you. "
-    "Each span once, in order. Do not re-read a span. Do not start over. "
+    "Case threads are planner-digest.txt in this working directory. "
+    "If that file lists parts, Read every part once, in order. Do not skip a part. "
+    "Do not Read /tmp/planner-digest.txt. That combined file is too large for one Read. "
+    "Slack and Mail were already classified. Do not Read planner-inbox.txt in this pass. "
     "You summarize. Python did not shorten those files. "
     "Do not Read /tmp/plan.json. "
     "Mandatory every run, no exception: OrgCS (threads + Initial Response + GUS related list), GUS (Support Contact, Follow, investigation SLA fields, LAP start/end), Slack, Calendar, Mail. Analyze all of them. "
@@ -625,7 +625,8 @@ def planner_mcp_prompt(runner: str = "") -> str:
     down = {str(row.get("id") or "") for row in rows if row.get("status") != "connected"}
     lines = [
         "This runner's planner MCPs: " + ", ".join(bits) + ".",
-        "BRIEF is an index. Read planner-digest.txt and planner-inbox.txt yourself, one Read or forward chunks. "
+        "BRIEF is an index. Read planner-digest.txt in this working directory. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. "
         "Never Slack MCP. Never CaseComment/EmailMessage/CaseFeed SOQL. "
         "ONE Write /tmp/plan-ai.json with peeks, ranks, and gus. Leave todayPlan as []. Do not write slack or mail. "
         "Do not skip a PLAN_SYSTEM section. Peek every gather case. Classify GUS. Then stop. "
@@ -5663,7 +5664,8 @@ def repair_plan_prompt(fails: list[str]) -> str:
         "The page did not publish. These are the only blockers. Find a way through them "
         "from the files already on disk. Do not re-gather. Do not Slack, Gmail, or SOQL. "
         "Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
-        "Read /tmp/plan-ai.json once. For a missing Peek, Read /tmp/planner-digest.txt once and write "
+        "Read /tmp/plan-ai.json once. For a missing Peek, Read planner-digest.txt in this working directory. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
         "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
         "Keep every other peek, rank, slack, mail, gus, and todayPlan row. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
@@ -12919,6 +12921,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             pathlib.Path("/tmp/plan-ai.json").unlink()
         except OSError:
             pass
+        link_planner_evidence()
         code, unrecognized, timed_out = run_cli()
         user_abort = PLAN_STOP.is_set() and read_plan_state().get("state") != "running"
         if user_abort and not pathlib.Path("/tmp/plan-ai.json").is_file():
