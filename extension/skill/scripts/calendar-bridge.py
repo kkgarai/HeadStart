@@ -541,8 +541,7 @@ PLANNER_MCPS = (
     ("orgcs", "OrgCS", ("orgcs", "user-orgcs", "org-cs", "org_cs")),
     ("gus", "GUS", ("gus_server", "gus-server", "gus")),
     ("slack", "Slack", ("slack",)),
-    ("gmail", "Gmail", ("google-workspace", "google_workspace", "gmail")),
-    ("calendar", "Calendar", ("google-workspace", "google_workspace", "google-calendar", "gcal")),
+    ("google", "Gmail & Calendar", ("google-workspace", "google_workspace", "gmail", "google-calendar", "gcal")),
 )
 MCP_SKIP_KEYS = (
     "omni",
@@ -1426,7 +1425,12 @@ def dx_google_connected() -> bool:
     return bool(_GOOGLE_DX_OK or _dx_session_ready())
 
 
-def dx_provider_connected(provider: str) -> bool:
+def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
+    """True when `auth --validate` accepts this provider.
+
+    Do not call this from the panel status check. `--validate` opens a browser
+    login when the stored session is missing.
+    """
     binary = find_mcp_adaptor_bin()
     if not binary or not provider or not adaptor_supports_provider(binary):
         return False
@@ -1435,7 +1439,7 @@ def dx_provider_connected(provider: str) -> bool:
             [binary, "auth", "--provider", provider, "--validate"],
             capture_output=True,
             text=True,
-            timeout=12,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
@@ -2066,7 +2070,7 @@ def mcp_server_candidates(servers: dict, names: tuple[str, ...]) -> list[dict]:
 
 def aisuite_candidates_for(mcp_id: str) -> list[dict]:
     """AI Suite on this machine. DevBar does not host these servers."""
-    if mcp_id in {"gmail", "calendar"}:
+    if mcp_id in {"google", "gmail", "calendar"}:
         cfg = aisuite_server_cfg("google-workspace")
         return [cfg] if cfg else []
     if mcp_id == "gus":
@@ -2078,8 +2082,172 @@ def aisuite_candidates_for(mcp_id: str) -> list[dict]:
     return []
 
 
+def _mcp_status_log(message: str) -> None:
+    try:
+        path = SKILL_ROOT / "out" / ".bridge.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(message[:500] + "\n")
+    except OSError:
+        pass
+
+
+def _mcp_mark(by_id: dict, mcp_id: str) -> None:
+    row = by_id.get(mcp_id)
+    if not row:
+        return
+    row["status"] = "connected"
+    row["note"] = ""
+
+
+def _mcp_cfg_bearer(cfg: dict) -> str:
+    headers = _mcp_headers(cfg)
+    return str(headers.get("Authorization") or headers.get("authorization") or "").strip()
+
+
+def _gus_session_connected(suite: dict) -> bool:
+    """Saved GUS sessions only. Opening the panel must not start a login."""
+    checks = (
+        ("sf", sf_gus_connected),
+        ("aisuite", lambda: aisuite_gus_connected(suite)),
+    )
+    for label, fn in checks:
+        try:
+            if fn():
+                return True
+        except Exception as exc:
+            _mcp_status_log("gus " + label + ": " + str(exc))
+    return False
+
+
+def _apply_stored_mcp_sessions(by_id: dict, suite: dict) -> None:
+    """Sessions each person already saved. One failure stays on that row."""
+    if _gus_session_connected(suite):
+        _mcp_mark(by_id, "gus")
+    try:
+        if aisuite_server_connected(suite, "slack"):
+            _mcp_mark(by_id, "slack")
+    except Exception as exc:
+        _mcp_status_log("slack status: " + str(exc))
+    try:
+        google_up = aisuite_server_connected(suite, "google-workspace") or dx_google_connected()
+        if google_up:
+            _mcp_mark(by_id, "google")
+    except Exception as exc:
+        _mcp_status_log("google status: " + str(exc))
+
+
+def _apply_configured_mcp_pings(by_id: dict) -> None:
+    """A configured server counts when this bridge can call it.
+
+    An OAuth client id with no bearer is the host's login, not a session this
+    process can send. OrgCS and Slack keep that login in Claude or Cursor.
+    """
+    servers = discover_mcp_servers("")
+    jobs = []
+    url_index: dict[str, list[str]] = {}
+    for key, _label, names in PLANNER_MCPS:
+        row = by_id[key]
+        if row["status"] == "connected":
+            continue
+        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        for cfg in candidates:
+            if looks_oauth(cfg) and not _mcp_cfg_bearer(cfg):
+                # OrgCS queries run in the fetch sidecar with the user's Claude
+                # settings, which already holds this OAuth login.
+                if key == "orgcs":
+                    _mcp_mark(by_id, key)
+                    break
+                continue
+            url = str(cfg.get("url") or "").strip()
+            if not url:
+                if ping_stdio_mcp(cfg) == "connected":
+                    _mcp_mark(by_id, key)
+                    break
+                continue
+            auth = _mcp_cfg_bearer(cfg)
+            if not auth:
+                continue
+            slot = url + "\n" + auth
+            url_index.setdefault(slot, []).append(key)
+            if not any(job[0] == url and job[2] == auth for job in jobs):
+                jobs.append((url, cfg, auth))
+    if not jobs:
+        return
+    with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
+        futs = {pool.submit(ping_http_mcp, cfg): (url, auth) for url, cfg, auth in jobs}
+        for fut in as_completed(futs):
+            url, auth = futs[fut]
+            try:
+                status = fut.result() or "disconnected"
+            except Exception:
+                status = "disconnected"
+            if status != "connected":
+                continue
+            for mcp_id in url_index.get(url + "\n" + auth, []):
+                _mcp_mark(by_id, mcp_id)
+            if "google-workspace" in url:
+                _mcp_mark(by_id, "google")
+
+
+def _mcp_status_notes(by_id: dict, suite: dict) -> None:
+    orgcs = by_id.get("orgcs")
+    if orgcs and orgcs.get("status") != "connected":
+        orgcs["note"] = "Authenticate the OrgCS MCP in Claude or Cursor"
+    gus = by_id.get("gus")
+    if gus and gus.get("status") != "connected":
+        gus["note"] = "Sign in to the GUS MCP"
+    slack = by_id.get("slack")
+    if slack and slack.get("status") != "connected":
+        slack["note"] = "Sign in to Slack"
+    google_note = "Sign in to Google"
+    try:
+        has_google = bool(aisuite_server_cfg("google-workspace"))
+        google_up = aisuite_server_connected(suite, "google-workspace")
+    except Exception as exc:
+        _mcp_status_log("google note: " + str(exc))
+        has_google = False
+        google_up = False
+    if has_google and not google_up:
+        google_note = "AI Suite did not accept the Google login"
+    google = by_id.get("google")
+    if google and google.get("status") != "connected":
+        google["note"] = google_note
+
+
+def planner_mcp_status(runner: str = "") -> list[dict]:
+    del runner
+    rows = [
+        {"id": key, "label": label, "status": "disconnected", "note": ""}
+        for key, label, _names in PLANNER_MCPS
+    ]
+    by_id = {row["id"]: row for row in rows}
+    suite: dict = {}
+    try:
+        suite = aisuite_manager_servers()
+    except Exception as exc:
+        _mcp_status_log("aisuite list: " + str(exc))
+    _apply_stored_mcp_sessions(by_id, suite)
+    try:
+        _apply_configured_mcp_pings(by_id)
+    except Exception as exc:
+        _mcp_status_log("mcp ping: " + str(exc))
+    orgcs = by_id.get("orgcs")
+    if orgcs and orgcs.get("status") != "connected":
+        try:
+            if orgcs_browser_session_ok():
+                _mcp_mark(by_id, "orgcs")
+        except Exception as exc:
+            _mcp_status_log("orgcs browser: " + str(exc))
+    try:
+        _mcp_status_notes(by_id, suite)
+    except Exception as exc:
+        _mcp_status_log("mcp notes: " + str(exc))
+    return rows
+
+
 def mcp_status_from_aisuite() -> list[dict]:
-    """If the full status check hits a missing file, still show AI Suite's own logins."""
+    """AI Suite logins only. The status route uses planner_mcp_status."""
     suite = {}
     try:
         suite = aisuite_manager_servers()
@@ -2091,104 +2259,11 @@ def mcp_status_from_aisuite() -> list[dict]:
     ]
     by_id = {row["id"]: row for row in rows}
     if aisuite_server_connected(suite, "google-workspace"):
-        for mcp_id in ("gmail", "calendar"):
-            by_id[mcp_id]["status"] = "connected"
+        by_id["google"]["status"] = "connected"
     if aisuite_server_connected(suite, "slack"):
         by_id["slack"]["status"] = "connected"
     if aisuite_gus_connected(suite):
         by_id["gus"]["status"] = "connected"
-    return rows
-
-
-def planner_mcp_status(runner: str = "") -> list[dict]:
-    del runner
-    rows = [
-        {"id": key, "label": label, "status": "disconnected", "note": ""}
-        for key, label, _names in PLANNER_MCPS
-    ]
-    suite = aisuite_manager_servers()
-    google = aisuite_server_cfg("google-workspace")
-    google_up = aisuite_server_connected(suite, "google-workspace")
-    if not google_up:
-        google_status = ping_http_mcp(google) if google else "disconnected"
-        google_up = google_status == "connected" or dx_google_connected()
-    if google_up:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["status"] = "connected"
-                row["note"] = ""
-    elif not google:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["note"] = "AI Suite has no Google credential on this machine"
-    else:
-        for row in rows:
-            if row["id"] in {"gmail", "calendar"}:
-                row["note"] = "AI Suite did not accept the Google login"
-    servers = discover_mcp_servers("")
-    jobs = []
-    url_index: dict[str, list[int]] = {}
-    by_id = {row["id"]: row for row in rows}
-    for key, _label, names in PLANNER_MCPS:
-        row = by_id[key]
-        if row["status"] == "connected":
-            continue
-        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
-        for cfg in candidates:
-            if looks_oauth(cfg):
-                row["status"] = "connected"
-                row["note"] = ""
-                break
-            url = str(cfg.get("url") or "").strip()
-            if not url:
-                if ping_stdio_mcp(cfg) == "connected":
-                    row["status"] = "connected"
-                    row["note"] = ""
-                    break
-                continue
-            headers = _mcp_headers(cfg)
-            auth = str(headers.get("Authorization") or headers.get("authorization") or "")
-            slot = url + "\n" + auth
-            url_index.setdefault(slot, []).append(key)
-            if not any(job[0] == url and job[2] == auth for job in jobs):
-                jobs.append((url, cfg, auth))
-    if jobs:
-        with ThreadPoolExecutor(max_workers=min(8, len(jobs))) as pool:
-            futs = {pool.submit(ping_http_mcp, cfg): (url, auth) for url, cfg, auth in jobs}
-            for fut in as_completed(futs):
-                url, auth = futs[fut]
-                try:
-                    status = fut.result() or "disconnected"
-                except Exception:
-                    status = "disconnected"
-                if status != "connected":
-                    continue
-                for mcp_id in url_index.get(url + "\n" + auth, []):
-                    by_id[mcp_id]["status"] = "connected"
-                    by_id[mcp_id]["note"] = ""
-                if "google-workspace" in url:
-                    for mcp_id in ("gmail", "calendar"):
-                        by_id[mcp_id]["status"] = "connected"
-                        by_id[mcp_id]["note"] = ""
-    for row in rows:
-        if row.get("status") != "connected":
-            row["status"] = "disconnected"
-    orgcs = by_id.get("orgcs")
-    if orgcs and orgcs.get("status") != "connected" and orgcs_browser_session_ok():
-        orgcs["status"] = "connected"
-        orgcs["note"] = ""
-    slack = by_id.get("slack")
-    if slack and slack.get("status") != "connected" and aisuite_server_connected(suite, "slack"):
-        slack["status"] = "connected"
-        slack["note"] = ""
-    gus = by_id.get("gus")
-    if gus and gus.get("status") != "connected" and (
-        aisuite_gus_connected(suite)
-        or sf_gus_connected()
-        or dx_provider_connected("gus")
-    ):
-        gus["status"] = "connected"
-        gus["note"] = ""
     return rows
 
 
@@ -6029,8 +6104,15 @@ def install_today_plan(run_cli) -> None:
         PLAN_SYSTEM_OVERRIDE = None
     if merge_today_plan_file():
         return
-    fallback_today_plan()
-    append_plan_step(kind="log", label="Today's plan filled from the finished ranks")
+    append_plan_step(kind="log", label="Today's plan was not written. Asking the model again.")
+    try:
+        run_cli(
+            prompt=TODAY_PLAN_SYSTEM + "\n\n" + today_plan_user_prompt(),
+            timeout_sec=3 * 60,
+        )
+    except OSError as exc:
+        append_plan_step(kind="log", label="Today's plan could not start: " + clip(str(exc), 160))
+    merge_today_plan_file()
 
 
 def finish_plan_from_evidence() -> bool:
@@ -6123,33 +6205,6 @@ def finish_plan_from_evidence() -> bool:
         if not isinstance(ai.get(key), list):
             ai[key] = []
     ai["tomorrowFirst"] = [row for row in (ai.get("tomorrowFirst") or [])]
-    plan = [row for row in (ai.get("todayPlan") or []) if isinstance(row, dict)]
-    daypart = str(gather.get("daypart") or "").strip().lower()
-    try:
-        free = int(gather.get("freeMinutes") or 0)
-    except (TypeError, ValueError):
-        free = 0
-    if daypart != "eod" and free >= 60:
-        new_row = {
-            "id": "plan-new-cases",
-            "kind": "plan",
-            "label": "Take New Cases",
-            "minutes": 25,
-            "detail": "Take new cases.",
-        }
-        plan = [row for row in plan if "plan-new-cases" not in str(row.get("id") or "")]
-        plan.insert(0, new_row)
-        if free >= 180 and not any("plan-break" in str(row.get("id") or "") for row in plan):
-            plan.append(
-                {
-                    "id": "plan-break-1",
-                    "kind": "break",
-                    "label": "Short Break",
-                    "minutes": 15,
-                    "detail": "Short break.",
-                }
-            )
-    ai["todayPlan"] = plan
     if not merge_classified_inbox():
         if not isinstance(ai.get("slack"), dict):
             ai["slack"] = {"groups": []}
@@ -6217,6 +6272,11 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             pass
         apply_live_assembled(data)
         data = apply_ai_overlay(data, started_epoch)
+        try:
+            fetch_orgcs_identity(data)
+        except Exception:
+            pass
+        apply_live_assembled(data)
         apply_general_shift_hours(data)
         prev = None
         try:
@@ -6224,7 +6284,9 @@ def salvage_publish_plan(started_epoch: float) -> bool:
         except Exception:
             prev = None
         try:
-            _sanitize_mod().restore_unreviewed_inbox(data, prev)
+            sanit = _sanitize_mod()
+            sanit.restore_unreviewed_inbox(data, prev)
+            sanit.omit_done_inbox_rows(data)
         except Exception:
             pass
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
@@ -6271,7 +6333,9 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 prev = load_page_briefing()
-                _sanitize_mod().restore_unreviewed_inbox(data, prev, force=True)
+                sanit = _sanitize_mod()
+                sanit.restore_unreviewed_inbox(data, prev, force=True)
+                sanit.omit_done_inbox_rows(data)
                 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
@@ -6348,6 +6412,10 @@ def repair_published_page() -> None:
     except Exception:
         return
     try:
+        try:
+            fetch_orgcs_identity(data)
+        except Exception:
+            pass
         apply_live_assembled(data)
         sanit = _sanitize_mod()
         sanit.apply_persisted_done(data, None, load_done_ledger())
@@ -8853,7 +8921,7 @@ def apply_orgcs_shift(data: dict, code: str, about: str) -> None:
     zone, short = orgcs_shift_zone(label)
     if zone:
         data["timezone"] = zone
-        if short and not str(data.get("timezoneShort") or "").strip():
+        if short:
             data["timezoneShort"] = short
     start, end = parse_aboutme_hours(about)
     if start and end:
@@ -8894,11 +8962,11 @@ def apply_live_assembled(data: dict) -> None:
     data["assembledFromCalendar"] = live
     if live:
         data["assembledSchedule"] = got["assembledSchedule"]
+        if data.get("shiftHoursFrom") != "orgcs" and got.get("shiftStart") and got.get("shiftEnd"):
+            data["shiftStart"] = got["shiftStart"]
+            data["shiftEnd"] = got["shiftEnd"]
+            data["shiftHoursFrom"] = "assembled"
         if not orgcs_owns:
-            if not str(data.get("shiftStart") or "").strip():
-                data["shiftStart"] = got["shiftStart"]
-                data["shiftEnd"] = got["shiftEnd"]
-                data["shiftHoursFrom"] = "assembled"
             if not str(data.get("timezone") or "").strip() and got.get("timezone"):
                 data["timezone"] = got["timezone"]
             if got.get("timezoneShort") and not str(data.get("timezoneShort") or "").strip():
@@ -9188,30 +9256,64 @@ def resolve_engineer_email(seeded: dict | None = None) -> str:
     return ""
 
 
+def _profile_from_userinfo(text: str) -> dict:
+    out = {"id": parse_orgcs_user_id(text), "name": "", "title": "", "email": parse_orgcs_email(text)}
+    raw = (text or "").strip()
+    obj = None
+    try:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            obj = loaded
+    except json.JSONDecodeError:
+        obj = None
+    if isinstance(obj, dict):
+        ident = obj.get("identity") if isinstance(obj.get("identity"), dict) else obj
+        if isinstance(ident, dict):
+            out["name"] = str(ident.get("displayName") or ident.get("name") or ident.get("Name") or "").strip()
+            out["title"] = str(ident.get("title") or ident.get("Title") or "").strip()
+    return out
+
+
+def _soql_quote(value: str) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
 def fetch_orgcs_identity(data: dict) -> None:
-    """Name, title, and manager from OrgCS User. Every run. Does not use a previous page."""
+    """Name, title, manager, and OrgCS shift. Every publish. Does not use a previous page."""
     if not isinstance(data, dict) or os.environ.get("DAY_PLANNER_EMPTY") == "1":
         return
     try:
         info = mcp_call_named(ORGCS_MCP_NAMES, "getUserInfo", {}, timeout=20)
     except Exception:
-        return
-    uid = parse_orgcs_user_id(info)
-    name = title = manager = ""
+        info = ""
+    profile = _profile_from_userinfo(info)
+    uid = profile["id"]
+    email = profile["email"]
+    name = profile["name"]
+    title = profile["title"]
+    manager = ""
+    rec: dict = {}
+    soql = ""
     if uid and "'" not in uid:
+        soql = (
+            "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+            "FROM User WHERE Id = '%s' LIMIT 1" % _soql_quote(uid)
+        )
+    elif "@" in email and "'" not in email:
+        soql = (
+            "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+            "FROM User WHERE Email = '%s' LIMIT 1" % _soql_quote(email)
+        )
+    if soql:
         try:
-            text = mcp_call_named(
-                ORGCS_MCP_NAMES,
-                "soqlQuery",
-                {"q": "SELECT Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name FROM User WHERE Id = '%s' LIMIT 1" % uid},
-                timeout=20,
-            )
+            text = mcp_call_named(ORGCS_MCP_NAMES, "soqlQuery", {"q": soql}, timeout=20)
         except Exception:
             text = ""
         recs = parse_soql_records(text)
         rec = recs[0] if recs else {}
-        name = str(rec.get("Name") or "").strip()
-        title = str(rec.get("Title") or "").strip()
+    if rec:
+        name = str(rec.get("Name") or name).strip()
+        title = str(rec.get("Title") or title).strip()
         mgr = rec.get("Manager") if isinstance(rec.get("Manager"), dict) else {}
         manager = str((mgr or {}).get("Name") or "").strip()
         apply_orgcs_shift(data, str(rec.get("Engineer_Shift__c") or ""), str(rec.get("AboutMe") or ""))
@@ -9220,10 +9322,29 @@ def fetch_orgcs_identity(data: dict) -> None:
             if "@" in val:
                 data["email"] = val
                 break
+    if not str(data.get("email") or "").strip() and "@" in email:
+        data["email"] = email
     if not str(data.get("email") or "").strip():
         found = resolve_engineer_email(data)
         if found:
             data["email"] = found
+    if not name:
+        saved = _orgcs_identity_file()
+        name = str(saved.get("name") or "").strip()
+        title = title or str(saved.get("title") or "").strip()
+        manager = manager or str(saved.get("manager") or "").strip()
+        if not str(data.get("engineerShift") or "").strip():
+            apply_orgcs_shift(
+                data,
+                str(saved.get("engineerShift") or ""),
+                str(saved.get("aboutMe") or ""),
+            )
+        if not str(data.get("email") or "").strip():
+            for key in ("email", "username"):
+                val = str(saved.get(key) or "").strip()
+                if "@" in val:
+                    data["email"] = val
+                    break
     if name:
         data["name"] = name
     if title:
@@ -9232,6 +9353,15 @@ def fetch_orgcs_identity(data: dict) -> None:
         data["manager"] = manager
     if name or title or manager:
         persist_identity(data)
+
+
+def _orgcs_identity_file() -> dict:
+    """Written by the OrgCS fetch when getUserInfo is not callable."""
+    try:
+        loaded = json.loads(pathlib.Path("/tmp/orgcs-identity.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def parse_soql_records(text: str) -> list:
@@ -10063,20 +10193,33 @@ def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, 
         return 0, str(exc)[:400]
 
 
+def _rejects_planner_thinking(body: str) -> bool:
+    """The model refused the thinking switch the planner sends. Do not try another shape."""
+    low = (body or "").lower()
+    return "thinking.type.enabled" in low and "not supported" in low
+
+
 def discover_model_shape(token: str, model_id: str) -> str:
-    """Try the planner request shapes. Keep the first one this model accepts."""
+    """The planner request is thinking enabled. A model that refuses that switch stays off the list.
+
+    Any other rejection can still pass on the normal request with thinking left off.
+    """
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
+    status, body = _probe_gateway_message(token, model_id, "enabled")
+    if status in (401, 403):
+        raise RuntimeError("Gateway rejected the token while checking models")
     shape = "no"
-    for candidate in ("plain", "adaptive", "enabled"):
-        status, _body = _probe_gateway_message(token, model_id, candidate)
+    if status == 200:
+        shape = "enabled"
+    elif not _rejects_planner_thinking(body):
+        status, _body = _probe_gateway_message(token, model_id, "plain")
         if status in (401, 403):
             raise RuntimeError("Gateway rejected the token while checking models")
         if status == 200:
-            shape = candidate
-            break
+            shape = "plain"
     with _MODEL_SHAPE_LOCK:
         _MODEL_SHAPE[model_id] = shape
     return shape
@@ -11753,9 +11896,33 @@ def attach_clipped_activity(seeded: dict, evidence: dict) -> dict:
     return refreshed
 
 
+def orgcs_username(email: str) -> str:
+    """OrgCS Username is the mailbox name plus @orgcs.com."""
+    text = (email or "").strip().replace("'", "")
+    if "@" not in text:
+        return ""
+    local = text.split("@", 1)[0].strip()
+    if not local:
+        return ""
+    return local + "@orgcs.com"
+
+
 def fetch_prompt_for_ids(ids: list[str]) -> str:
+    username = orgcs_username(resolve_engineer_email())
+    user_query = (
+        "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+        "FROM User WHERE Username = '%s' LIMIT 1" % username
+        if username
+        else "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
+        "FROM User WHERE Username LIKE '%@orgcs.com' AND IsActive = true LIMIT 5"
+    )
     return (
-        "getUserInfo once, then "
+        "Do not call getUserInfo. It errors and is not required. "
+        "Call mcp__orgcs__soqlQuery: " + user_query + ". "
+        "Write /tmp/orgcs-identity.json as "
+        "{\"name\",\"title\",\"manager\",\"email\",\"username\",\"engineerShift\",\"aboutMe\"} "
+        "from that User row. manager is Manager.Name. engineerShift is Engineer_Shift__c. "
+        "Then mcp__orgcs__soqlQuery: "
         "SELECT Id, CaseNumber, Subject, Status, Severity_Level__c, LastModifiedDate, IsClosed, "
         "SE_Initial_Response_Status__c, SE_Target_Response__c, First_Response_Date_Time__c, "
         "GUS_Investigation_Number__c, Display_Bug__c "
@@ -12469,6 +12636,9 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         if prompt and prompt_on_argv:
             baked = compact_plan_prompt(tool["id"])
             cmd = [prompt if part == baked else part for part in cmd]
+        stdin_text = ""
+        if not prompt_on_argv:
+            stdin_text = prompt if prompt is not None else compact_plan_prompt(tool["id"])
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -12483,9 +12653,8 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         deadline = time.monotonic() + int(timeout_sec or PLAN_TIMEOUT_SEC)
         try:
                 if proc.stdin:
-                    if not prompt_on_argv:
-                        text = prompt if prompt is not None else compact_plan_prompt(tool["id"])
-                        proc.stdin.write(text.encode("utf-8"))
+                    if stdin_text:
+                        proc.stdin.write(stdin_text.encode("utf-8"))
                     proc.stdin.close()
         except BrokenPipeError:
             pass
@@ -12609,9 +12778,8 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         if flags.get("runner_down"):
             append_plan_step(
                 kind="log",
-                label="Runner server error. Today's plan filled from the finished ranks.",
+                label="Runner server error. Asking the model for Today's plan on the next pass.",
             )
-            fallback_today_plan()
             code = 0
             flags["fatal"] = False
             flags["fatal_msg"] = ""
@@ -12622,8 +12790,30 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             set_plan_force_model("")
     merge_classified_inbox()
     published = salvage_publish_plan(run_started)
-    if not published and not user_abort and repair_known_publish_blocks():
-        append_plan_step(kind="log", label="Fixed the publish blockers from this run's clips.")
+    fix_rounds = 0
+    while not published and not user_abort and LAST_CHECK_FAILS and fix_rounds < 2:
+        fix_rounds += 1
+        fails = list(LAST_CHECK_FAILS)
+        append_plan_step(kind="log", label="Asking the model to fix the publish check")
+        try:
+            pathlib.Path("/tmp/plan-today.json").unlink()
+        except OSError:
+            pass
+        fix_prompt = (
+            TODAY_PLAN_SYSTEM
+            + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
+            "Write only /tmp/plan-today.json. Do not drop a required row.\n"
+            + "\n".join(fails)
+            + "\n\n"
+            + today_plan_user_prompt()
+        )
+        try:
+            run_cli(prompt=fix_prompt, timeout_sec=3 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="The fix pass could not start: " + clip(str(exc), 160))
+            break
+        if not merge_today_plan_file():
+            break
         published = salvage_publish_plan(run_started)
     if prompt_too_long or flags.get("runner_down"):
         flags["fatal"] = False
@@ -12907,8 +13097,12 @@ class Handler(BaseHTTPRequestHandler):
             runner = str((qs.get("runner") or [""])[0] or "").strip()
             try:
                 mcps = planner_mcp_status(runner)
-            except Exception:
-                mcps = mcp_status_from_aisuite()
+            except Exception as exc:
+                _mcp_status_log("mcp status: " + str(exc))
+                mcps = [
+                    {"id": key, "label": label, "status": "disconnected", "note": ""}
+                    for key, label, _names in PLANNER_MCPS
+                ]
             self._json(200, {"ok": True, "mcps": mcps, "runner": canonicalize_runner_id(runner)})
             return
         if path == "/runners":

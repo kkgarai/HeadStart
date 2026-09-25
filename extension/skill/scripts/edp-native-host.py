@@ -307,8 +307,7 @@ def copy_prior_snapshot_ledgers(dest_out: pathlib.Path) -> None:
 
 
 def copy_ledgers(src_out: pathlib.Path, dest_out: pathlib.Path) -> None:
-    """A new version snapshot starts empty. Do not carry Done marks or holds forward."""
-    return
+    """A new version inherits Done marks so the next run omits completed Slack and Mail."""
     if not src_out.is_dir():
         return
     dest_out.mkdir(parents=True, exist_ok=True)

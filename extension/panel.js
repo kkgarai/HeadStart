@@ -398,8 +398,7 @@ const PLANNER_MCP_ROWS = [
   { id: "orgcs", label: "OrgCS" },
   { id: "gus", label: "GUS" },
   { id: "slack", label: "Slack" },
-  { id: "gmail", label: "Gmail" },
-  { id: "calendar", label: "Calendar" }
+  { id: "google", label: "Gmail & Calendar" }
 ];
 
 function mcpStatusLabel(status, note) {
@@ -437,7 +436,7 @@ function renderMcps(rows) {
       btn.addEventListener("click", useOrgcsBrowserSession);
       side.appendChild(btn);
     }
-    if (row && row.id === "gmail" && googleNeedsSignIn(list)) {
+    if (row && row.id === "google" && googleNeedsSignIn(list)) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "btn";
@@ -482,7 +481,7 @@ async function startDxGusAuth() {
 
 function googleNeedsSignIn(list) {
   return (list || []).some((row) => {
-    return row && (row.id === "gmail" || row.id === "calendar") && row.status !== "connected" && row.status !== "checking";
+    return row && (row.id === "google" || row.id === "gmail" || row.id === "calendar") && row.status !== "connected" && row.status !== "checking";
   });
 }
 
@@ -558,8 +557,8 @@ async function loadMcps() {
     const runner = selectedRunner();
     const resp = await fetch(bridgeUrl + "/mcp/status?runner=" + encodeURIComponent(runner));
     const body = await resp.json().catch(() => ({}));
-    if (!resp.ok || body.error) throw new Error(body.error || "Could not read MCP status");
     let rows = body.mcps || [];
+    if ((!resp.ok || body.error) && !rows.length) throw new Error(body.error || "Could not read MCP status");
     const orgcsDown = rows.some((row) => row && row.id === "orgcs" && row.status !== "connected");
     if (orgcsDown && (await pushOrgcsBrowserSession())) {
       const again = await fetch(bridgeUrl + "/mcp/status?runner=" + encodeURIComponent(runner));
@@ -714,9 +713,10 @@ async function loadModels(token) {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not list models");
-    const saved = await storedModel();
-    const chosen = fillModelSelect(body.models || [], saved, body.default || "");
-    if (chosen) await persistModel(chosen);
+    const stored = await chrome.storage.local.get(["gatewayModel", "gatewayModelChosen"]);
+    const pick = stored.gatewayModelChosen ? stored.gatewayModel || "" : "";
+    const chosen = fillModelSelect(body.models || [], pick, body.default || "");
+    if (chosen && !stored.gatewayModelChosen) await persistModel(chosen);
     setTokenMsg("");
     return "";
   } catch (err) {
@@ -1214,6 +1214,7 @@ tokenInput.addEventListener("input", () => {
 modelInput.addEventListener("change", async () => {
   const model = (modelInput.value || "").trim();
   if (!model) return;
+  await chrome.storage.local.set({ gatewayModelChosen: true });
   await persistModel(model);
 });
 if (runnerInput) {
@@ -1274,7 +1275,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 (function tabFlash() {
   var timer = null;
-  var REAL_TITLE = "Engineer Day Planner";
+  var REAL_TITLE = "Day Planner";
   var flashMsg = "Notification";
   function isFlashTitle(t) {
     t = String(t || "").trim();

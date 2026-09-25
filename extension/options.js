@@ -160,8 +160,7 @@ const PLANNER_MCP_ROWS = [
   { id: "orgcs", label: "OrgCS" },
   { id: "gus", label: "GUS" },
   { id: "slack", label: "Slack" },
-  { id: "gmail", label: "Gmail" },
-  { id: "calendar", label: "Calendar" }
+  { id: "google", label: "Gmail & Calendar" }
 ];
 
 function mcpStatusLabel(status) {
@@ -203,8 +202,9 @@ async function loadMcps() {
     const runner = selectedRunner();
     const resp = await fetch(base + "/mcp/status?runner=" + encodeURIComponent(runner));
     const body = await resp.json().catch(() => ({}));
-    if (!resp.ok || body.error) throw new Error(body.error || "Could not read MCP status");
-    renderMcps(body.mcps || []);
+    const rows = body.mcps || [];
+    if ((!resp.ok || body.error) && !rows.length) throw new Error(body.error || "Could not read MCP status");
+    renderMcps(rows);
   } catch (_) {
     renderMcps(PLANNER_MCP_ROWS.map((row) => ({ ...row, status: "disconnected" })));
   }
@@ -232,9 +232,10 @@ async function loadModels(token) {
     });
     const body = await resp.json().catch(() => ({}));
     if (!resp.ok || body.error) throw new Error(body.error || "Could not list models");
-    const stored = await chrome.storage.local.get(["gatewayModel"]);
-    const chosen = fillModelSelect(body.models || [], stored.gatewayModel || "", body.default || "");
-    if (chosen) await chrome.storage.local.set({ gatewayModel: chosen });
+    const stored = await chrome.storage.local.get(["gatewayModel", "gatewayModelChosen"]);
+    const pick = stored.gatewayModelChosen ? stored.gatewayModel || "" : "";
+    const chosen = fillModelSelect(body.models || [], pick, body.default || "");
+    if (chosen && !stored.gatewayModelChosen) await chrome.storage.local.set({ gatewayModel: chosen });
     setMsg("");
   } catch (err) {
     resetModelSelect("Could not load models");
@@ -320,7 +321,7 @@ input.addEventListener("input", () => {
 modelInput.addEventListener("change", async () => {
   const model = (modelInput.value || "").trim();
   if (!model) return;
-  await chrome.storage.local.set({ gatewayModel: model });
+  await chrome.storage.local.set({ gatewayModel: model, gatewayModelChosen: true });
 });
 if (runnerInput) {
   runnerInput.addEventListener("change", async () => {

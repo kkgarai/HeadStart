@@ -2239,8 +2239,11 @@ def restore_last_good_inbox(data: dict, prev: dict | None) -> None:
             continue
         if not _inbox_rows(old_sec):
             continue
-        new_sec["groups"] = old_sec.get("groups") or []
-        new_sec["items"] = old_sec.get("items") or []
+        groups, items = _inbox_without_done(old_sec, collect_done_keys(data) | collect_done_keys(prev) | disk_done_keys())
+        if not groups and not items:
+            continue
+        new_sec["groups"] = groups
+        new_sec["items"] = items
         new_sec.pop("empty", None)
 
 
@@ -2790,6 +2793,23 @@ def refuse_false_gus_clear(data: dict) -> None:
         break
 
 
+def _inbox_without_done(sec: dict, keys: set[str]) -> tuple[list, list]:
+    def not_done(it: object) -> bool:
+        return isinstance(it, dict) and not inbox_row_is_done(it, keys)
+
+    groups = []
+    for group in sec.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        items = [it for it in (group.get("items") or []) if not_done(it)]
+        if items:
+            copied = dict(group)
+            copied["items"] = items
+            groups.append(copied)
+    items = [it for it in (sec.get("items") or []) if not_done(it)]
+    return groups, items
+
+
 def restore_unreviewed_inbox(data: dict, prev: dict | None, force: bool = False) -> bool:
     """If leftover fetch never finished, keep last classified Slack/Mail/GUS."""
     if not isinstance(data, dict) or not isinstance(prev, dict):
@@ -2819,8 +2839,11 @@ def restore_unreviewed_inbox(data: dict, prev: dict | None, force: bool = False)
             continue
         if not _inbox_rows(old_sec):
             continue
-        new_sec["groups"] = old_sec.get("groups") or []
-        new_sec["items"] = old_sec.get("items") or []
+        groups, items = _inbox_without_done(old_sec, collect_done_keys(data) | collect_done_keys(prev) | disk_done_keys())
+        if not groups and not items:
+            continue
+        new_sec["groups"] = groups
+        new_sec["items"] = items
         new_sec.pop("empty", None)
         restored = True
     return restored
@@ -3214,11 +3237,40 @@ def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
     return False
 
 
+def _done_ledger_files() -> list[pathlib.Path]:
+    found: list[pathlib.Path] = []
+    here = pathlib.Path(__file__).resolve().parent.parent / "out" / ".done-keys.json"
+    if here.is_file():
+        found.append(here)
+    runs = pathlib.Path.home() / "Library" / "Application Support" / "engineer-day-planner" / "runs"
+    try:
+        extra = [path for path in runs.glob("*/skill/out/.done-keys.json") if path.is_file()]
+    except OSError:
+        extra = []
+    extra.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in extra:
+        if path not in found:
+            found.append(path)
+    return found
+
+
+def disk_done_keys() -> set[str]:
+    """Done marks from this snapshot and earlier ones. A new run must omit those Slack and Mail rows."""
+    keys: set[str] = set()
+    for path in _done_ledger_files():
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        keys |= _ledger_keys(rec)
+    return keys
+
+
 def omit_done_inbox_rows(data: dict) -> None:
     """Next Run Planner drops Slack/Mail already marked Done. The open page keeps them struck."""
     if not isinstance(data, dict):
         return
-    keys = collect_done_keys(data)
+    keys = collect_done_keys(data) | disk_done_keys()
     for sec in data.get("sections") or []:
         if not isinstance(sec, dict):
             continue
@@ -4999,29 +5051,6 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
                 row["promisedClose"] = True
             avoid = kind == "case" or row_id in ("plan-new-cases", "plan-close")
             place(minutes, row, after=after, avoid_buffer=avoid, shrink=15, done=done)
-        if assembled and short_n == 0 and int((end - work_lo).total_seconds() // 60) >= 180:
-            skip_until[0] = None
-            filler = _work_row(
-                "plan-break-1",
-                "break",
-                "Short break",
-                start,
-                start + timedelta(minutes=12),
-                detail="10–15 minutes. Not before or after a meal. Spaced from any other short break.",
-            )
-            for _ in range(6):
-                break_at = _break_after(12)
-                if break_at is None:
-                    break
-                if not place(12, filler, after=break_at, shrink=0):
-                    break
-                start_at = _wall(filler.get("startStamp") or "")
-                used = int(filler.get("durationMinutes") or 12)
-                if start_at and _break_against_meal(start_at, used):
-                    _release_placed(filler)
-                    skip_until[0] = start_at + timedelta(minutes=max(used, 45))
-                    continue
-                break
 
     def place_remaining_queue_into_holes() -> None:
         """Slack/Mail if missing. Assembled: New cases once if omitted. Rest may stay free."""
