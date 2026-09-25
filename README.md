@@ -11,11 +11,11 @@ Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.
 Clone the public repository, then load that folder in Chrome. The folder contains `manifest.json`, the three installers, and an `extension` folder with the rest of the files.
 
 ```bash
-git clone https://github.com/kkgarai/day-planner.git
-cd day-planner
+git clone https://github.com/kkgarai/headstart.git
+cd headstart
 ```
 
-1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `day-planner` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
+1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `headstart` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
 
 2. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer. The page lists all three and marks the one for this computer.
 
