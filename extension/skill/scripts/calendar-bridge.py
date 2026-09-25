@@ -9924,7 +9924,7 @@ def default_model() -> str:
             value = ""
         if value:
             return value
-    return "claude-sonnet-5"
+    return ""
 
 
 def resolve_model(raw: str) -> str:
@@ -10047,31 +10047,15 @@ def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, 
 
 
 def discover_model_shape(token: str, model_id: str) -> str:
-    """Try the planner request. Keep the first shape this model accepts. No per-model names."""
+    """One planner request for every model. A model that rejects it stays off the list."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, body = _probe_gateway_message(token, model_id, "enabled")
+    status, _body = _probe_gateway_message(token, model_id, "enabled")
     if status in (401, 403):
         raise RuntimeError("Gateway rejected the token while checking models")
-    shape = ""
-    if status == 200:
-        shape = "enabled"
-    elif status == 400 and _suggests_adaptive(body):
-        status, body = _probe_gateway_message(token, model_id, "adaptive")
-        if status in (401, 403):
-            raise RuntimeError("Gateway rejected the token while checking models")
-        if status == 200:
-            shape = "adaptive"
-    if not shape and status == 400:
-        status, _body = _probe_gateway_message(token, model_id, "plain")
-        if status in (401, 403):
-            raise RuntimeError("Gateway rejected the token while checking models")
-        if status == 200:
-            shape = "plain"
-    if not shape:
-        shape = "no"
+    shape = "enabled" if status == 200 else "no"
     with _MODEL_SHAPE_LOCK:
         _MODEL_SHAPE[model_id] = shape
     return shape
@@ -10124,10 +10108,6 @@ def preferred_planner_default(models: list[dict]) -> str:
     ids = [str(row.get("id") or "") for row in models if isinstance(row, dict) and row.get("id")]
     if not ids:
         return default_model()
-    for needle in ("claude-sonnet-5", "claude-sonnet-4-6"):
-        for mid in ids:
-            if mid.lower() == needle or mid.lower().startswith(needle):
-                return mid
     grok = [mid for mid in ids if re.search(r"(?:^|/)grok-", mid, re.I)]
     if grok:
         return max(grok, key=lambda mid: _model_version_tuple(mid.lower()))
