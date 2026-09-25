@@ -6104,8 +6104,15 @@ def install_today_plan(run_cli) -> None:
         PLAN_SYSTEM_OVERRIDE = None
     if merge_today_plan_file():
         return
-    fallback_today_plan()
-    append_plan_step(kind="log", label="Today's plan filled from the finished ranks")
+    append_plan_step(kind="log", label="Today's plan was not written. Asking the model again.")
+    try:
+        run_cli(
+            prompt=TODAY_PLAN_SYSTEM + "\n\n" + today_plan_user_prompt(),
+            timeout_sec=3 * 60,
+        )
+    except OSError as exc:
+        append_plan_step(kind="log", label="Today's plan could not start: " + clip(str(exc), 160))
+    merge_today_plan_file()
 
 
 def finish_plan_from_evidence() -> bool:
@@ -6198,33 +6205,6 @@ def finish_plan_from_evidence() -> bool:
         if not isinstance(ai.get(key), list):
             ai[key] = []
     ai["tomorrowFirst"] = [row for row in (ai.get("tomorrowFirst") or [])]
-    plan = [row for row in (ai.get("todayPlan") or []) if isinstance(row, dict)]
-    daypart = str(gather.get("daypart") or "").strip().lower()
-    try:
-        free = int(gather.get("freeMinutes") or 0)
-    except (TypeError, ValueError):
-        free = 0
-    if daypart != "eod" and free >= 60:
-        new_row = {
-            "id": "plan-new-cases",
-            "kind": "plan",
-            "label": "Take New Cases",
-            "minutes": 25,
-            "detail": "Take new cases.",
-        }
-        plan = [row for row in plan if "plan-new-cases" not in str(row.get("id") or "")]
-        plan.insert(0, new_row)
-        if free >= 180 and not any("plan-break" in str(row.get("id") or "") for row in plan):
-            plan.append(
-                {
-                    "id": "plan-break-1",
-                    "kind": "break",
-                    "label": "Short Break",
-                    "minutes": 15,
-                    "detail": "Short break.",
-                }
-            )
-    ai["todayPlan"] = plan
     if not merge_classified_inbox():
         if not isinstance(ai.get("slack"), dict):
             ai["slack"] = {"groups": []}
@@ -12621,6 +12601,9 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         if prompt and prompt_on_argv:
             baked = compact_plan_prompt(tool["id"])
             cmd = [prompt if part == baked else part for part in cmd]
+        stdin_text = ""
+        if not prompt_on_argv:
+            stdin_text = prompt if prompt is not None else compact_plan_prompt(tool["id"])
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -12635,9 +12618,8 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         deadline = time.monotonic() + int(timeout_sec or PLAN_TIMEOUT_SEC)
         try:
                 if proc.stdin:
-                    if not prompt_on_argv:
-                        text = prompt if prompt is not None else compact_plan_prompt(tool["id"])
-                        proc.stdin.write(text.encode("utf-8"))
+                    if stdin_text:
+                        proc.stdin.write(stdin_text.encode("utf-8"))
                     proc.stdin.close()
         except BrokenPipeError:
             pass
@@ -12761,9 +12743,8 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         if flags.get("runner_down"):
             append_plan_step(
                 kind="log",
-                label="Runner server error. Today's plan filled from the finished ranks.",
+                label="Runner server error. Asking the model for Today's plan on the next pass.",
             )
-            fallback_today_plan()
             code = 0
             flags["fatal"] = False
             flags["fatal_msg"] = ""
@@ -12774,8 +12755,30 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             set_plan_force_model("")
     merge_classified_inbox()
     published = salvage_publish_plan(run_started)
-    if not published and not user_abort and repair_known_publish_blocks():
-        append_plan_step(kind="log", label="Fixed the publish blockers from this run's clips.")
+    fix_rounds = 0
+    while not published and not user_abort and LAST_CHECK_FAILS and fix_rounds < 2:
+        fix_rounds += 1
+        fails = list(LAST_CHECK_FAILS)
+        append_plan_step(kind="log", label="Asking the model to fix the publish check")
+        try:
+            pathlib.Path("/tmp/plan-today.json").unlink()
+        except OSError:
+            pass
+        fix_prompt = (
+            TODAY_PLAN_SYSTEM
+            + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
+            "Write only /tmp/plan-today.json. Do not drop a required row.\n"
+            + "\n".join(fails)
+            + "\n\n"
+            + today_plan_user_prompt()
+        )
+        try:
+            run_cli(prompt=fix_prompt, timeout_sec=3 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="The fix pass could not start: " + clip(str(exc), 160))
+            break
+        if not merge_today_plan_file():
+            break
         published = salvage_publish_plan(run_started)
     if prompt_too_long or flags.get("runner_down"):
         flags["fatal"] = False

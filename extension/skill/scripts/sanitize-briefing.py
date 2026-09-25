@@ -4999,29 +4999,6 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
                 row["promisedClose"] = True
             avoid = kind == "case" or row_id in ("plan-new-cases", "plan-close")
             place(minutes, row, after=after, avoid_buffer=avoid, shrink=15, done=done)
-        if assembled and short_n == 0 and int((end - work_lo).total_seconds() // 60) >= 180:
-            skip_until[0] = None
-            filler = _work_row(
-                "plan-break-1",
-                "break",
-                "Short break",
-                start,
-                start + timedelta(minutes=12),
-                detail="10–15 minutes. Not before or after a meal. Spaced from any other short break.",
-            )
-            for _ in range(6):
-                break_at = _break_after(12)
-                if break_at is None:
-                    break
-                if not place(12, filler, after=break_at, shrink=0):
-                    break
-                start_at = _wall(filler.get("startStamp") or "")
-                used = int(filler.get("durationMinutes") or 12)
-                if start_at and _break_against_meal(start_at, used):
-                    _release_placed(filler)
-                    skip_until[0] = start_at + timedelta(minutes=max(used, 45))
-                    continue
-                break
 
     def place_remaining_queue_into_holes() -> None:
         """Slack/Mail if missing. Assembled: New cases once if omitted. Rest may stay free."""
@@ -5121,26 +5098,6 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
     clock = meetings + placed
     clock.sort(key=lambda it: _wall(it.get("startStamp") or "") or datetime.min)
     plan["items"] = clock
-    specs = data.get("todayPlan")
-    if not isinstance(specs, list):
-        specs = []
-    have = {str(row.get("id") or "") for row in specs if isinstance(row, dict)}
-    for it in clock:
-        if not isinstance(it, dict):
-            continue
-        rid = str(it.get("id") or "")
-        if not rid.startswith("plan-break") or rid in have:
-            continue
-        specs.append(
-            {
-                "id": rid,
-                "kind": "break",
-                "label": it.get("label") or "Short break",
-                "minutes": it.get("durationMinutes") or 12,
-            }
-        )
-        have.add(rid)
-    data["todayPlan"] = specs
     if clock:
         plan.pop("empty", None)
     if len(overrides) > 80:
