@@ -1301,7 +1301,19 @@ def apply_ai_case_buckets(data: dict) -> None:
             seen.add(num)
             collected.append((name, it))
         sec["items"] = keep_other
-    if not collected:
+    ranked = any(
+        _ai_num_list(data, key)
+        for key in (
+            "needsUsNow",
+            "followUpDue",
+            "stillWatching",
+            "customerAskedMeeting",
+            "quickWins",
+            "beforeYouLogOff",
+            "tomorrowFirst",
+        )
+    )
+    if not collected and not ranked:
         apply_case_holds(data)
         demote_solution_provided_from_now(data)
         return
