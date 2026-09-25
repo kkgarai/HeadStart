@@ -10063,33 +10063,20 @@ def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, 
         return 0, str(exc)[:400]
 
 
-def _rejects_planner_thinking(body: str) -> bool:
-    """The model refused the thinking switch the planner sends. Do not try another shape."""
-    low = (body or "").lower()
-    return "thinking.type.enabled" in low and "not supported" in low
-
-
 def discover_model_shape(token: str, model_id: str) -> str:
-    """The planner request is thinking enabled. A model that refuses that switch stays off the list.
-
-    Any other rejection can still pass on the normal request with thinking left off.
-    """
+    """Try the planner request shapes. Keep the first one this model accepts."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, body = _probe_gateway_message(token, model_id, "enabled")
-    if status in (401, 403):
-        raise RuntimeError("Gateway rejected the token while checking models")
     shape = "no"
-    if status == 200:
-        shape = "enabled"
-    elif not _rejects_planner_thinking(body):
-        status, _body = _probe_gateway_message(token, model_id, "plain")
+    for candidate in ("plain", "adaptive", "enabled"):
+        status, _body = _probe_gateway_message(token, model_id, candidate)
         if status in (401, 403):
             raise RuntimeError("Gateway rejected the token while checking models")
         if status == 200:
-            shape = "plain"
+            shape = candidate
+            break
     with _MODEL_SHAPE_LOCK:
         _MODEL_SHAPE[model_id] = shape
     return shape
