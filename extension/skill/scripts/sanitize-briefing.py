@@ -966,10 +966,15 @@ def stamp_needs_when(data: dict) -> None:
 
 def hoist_peek_fields(data: dict) -> None:
     """Page Peek is the model's analysis. Do not hoist raw activity as chronology."""
+    peeks = data.get("peeks") if isinstance(data.get("peeks"), dict) else {}
     for _sec, it in _walk_items(data):
+        num = re.sub(r"\D", "", str(it.get("caseNumber") or it.get("id") or ""))
+        spec = peeks.get(num) if len(num) >= 6 and isinstance(peeks.get(num), dict) else {}
         peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
-        summary = str(peek.get("summary") or it.get("summary") or "").strip()
+        summary = str(peek.get("summary") or it.get("summary") or spec.get("summary") or "").strip()
         chrono = peek.get("chronology") if isinstance(peek.get("chronology"), list) else None
+        if not chrono and isinstance(spec.get("chronology"), list):
+            chrono = spec.get("chronology")
         if chrono is None and it.get("activity") is not it.get("chronology"):
             chrono = it.get("chronology") if isinstance(it.get("chronology"), list) else []
         if not isinstance(chrono, list):

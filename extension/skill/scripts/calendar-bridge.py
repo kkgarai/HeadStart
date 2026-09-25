@@ -12940,24 +12940,36 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         fix_rounds += 1
         fails = list(LAST_CHECK_FAILS)
         append_plan_step(kind="log", label="Asking the model to fix the publish check")
-        try:
-            pathlib.Path("/tmp/plan-today.json").unlink()
-        except OSError:
-            pass
-        fix_prompt = (
-            TODAY_PLAN_SYSTEM
-            + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
-            "Write only /tmp/plan-today.json. Do not drop a required row.\n"
-            + "\n".join(fails)
-            + "\n\n"
-            + today_plan_user_prompt()
+        needs_analysis = any(
+            re.search(r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology):", f)
+            for f in fails
+        )
+        needs_today = any(
+            re.search(r"FAIL (today|when|meeting|bunch|closeout):", f) for f in fails
         )
         try:
-            run_cli(prompt=fix_prompt, timeout_sec=3 * 60)
+            if needs_analysis or not needs_today:
+                run_cli(prompt=repair_plan_prompt(fails), timeout_sec=4 * 60)
+            if needs_today:
+                try:
+                    pathlib.Path("/tmp/plan-today.json").unlink()
+                except OSError:
+                    pass
+                run_cli(
+                    prompt=(
+                        TODAY_PLAN_SYSTEM
+                        + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
+                        "Write only /tmp/plan-today.json. Do not drop a required row.\n"
+                        + "\n".join(fails)
+                        + "\n\n"
+                        + today_plan_user_prompt()
+                    ),
+                    timeout_sec=3 * 60,
+                )
+                if not merge_today_plan_file():
+                    break
         except OSError as exc:
             append_plan_step(kind="log", label="The fix pass could not start: " + clip(str(exc), 160))
-            break
-        if not merge_today_plan_file():
             break
         published = salvage_publish_plan(run_started)
     if prompt_too_long or flags.get("runner_down"):
