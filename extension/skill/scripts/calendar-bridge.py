@@ -11887,8 +11887,18 @@ def attach_clipped_activity(seeded: dict, evidence: dict) -> dict:
 
 
 def fetch_prompt_for_ids(ids: list[str]) -> str:
+    email = resolve_engineer_email().replace("'", "")
+    if "@" not in email:
+        email = ""
+    user_query = (
+        "SELECT Id FROM User WHERE Email = '%s' OR Username = '%s' LIMIT 5" % (email, email)
+        if email
+        else "SELECT Id FROM User WHERE Username LIKE '%@orgcs.com' AND IsActive = true LIMIT 5"
+    )
     return (
-        "getUserInfo once, then "
+        "Do not call getUserInfo. It errors and is not required. "
+        "Call mcp__orgcs__soqlQuery: " + user_query + ". "
+        "Then mcp__orgcs__soqlQuery: "
         "SELECT Id, CaseNumber, Subject, Status, Severity_Level__c, LastModifiedDate, IsClosed, "
         "SE_Initial_Response_Status__c, SE_Target_Response__c, First_Response_Date_Time__c, "
         "GUS_Investigation_Number__c, Display_Bug__c "

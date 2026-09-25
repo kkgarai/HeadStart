@@ -7,8 +7,8 @@ Never fetch a **closed** case (`IsClosed = true`) or a case this engineer does n
 
 Copy every `500…` ParentId **verbatim** from the **open Case** query you just ran. Ignore any other 500-ids in the user message — those may be closed or transferred leftovers.
 
-1. `getUserInfo` once.
-2. `SELECT Id, CaseNumber, Subject, Status, Severity_Level__c, LastModifiedDate, IsClosed, SE_Initial_Response_Status__c, SE_Target_Response__c, First_Response_Date_Time__c, GUS_Investigation_Number__c, Display_Bug__c FROM Case WHERE OwnerId = '<that Id>' AND IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 80` (never `Description`).
+1. Resolve this engineer's User Id with `mcp__orgcs__soqlQuery`. The user message has the email. `SELECT Id FROM User WHERE Email = '<email>' OR Username = '<email>' LIMIT 5`. Use the one Id that comes back. If `mcp__orgcs__getUserInfo` errors, ignore it and keep going. That error is not a reason to stop.
+2. `mcp__orgcs__soqlQuery`: `SELECT Id, CaseNumber, Subject, Status, Severity_Level__c, LastModifiedDate, IsClosed, SE_Initial_Response_Status__c, SE_Target_Response__c, First_Response_Date_Time__c, GUS_Investigation_Number__c, Display_Bug__c FROM Case WHERE OwnerId = '<that Id>' AND IsClosed = false ORDER BY LastModifiedDate DESC LIMIT 80` (never `Description`).
 3. Write `{"records":[...]}` to `/tmp/owned-cases.json` (those records only).
 4. **One query per case**, not one shared LIMIT across the queue. Page until a page comes back short. **EmailMessage is mandatory — never skip it for CaseComment.** Do not drop a comment or email to save size.
    - `SELECT ParentId, CommentBody, CreatedDate, CreatedBy.Name, IsPublished FROM CaseComment WHERE ParentId = '<one id>' ORDER BY CreatedDate DESC LIMIT 200` then `CreatedDate < <oldest>` until a short page
