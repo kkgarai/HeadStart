@@ -1426,7 +1426,11 @@ def dx_google_connected() -> bool:
 
 
 def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
-    """True when the adaptor already has this provider session. Does not open a login."""
+    """True when `auth --validate` accepts this provider.
+
+    Do not call this from the panel status check. `--validate` opens a browser
+    login when the stored session is missing.
+    """
     binary = find_mcp_adaptor_bin()
     if not binary or not provider or not adaptor_supports_provider(binary):
         return False
@@ -2102,9 +2106,8 @@ def _mcp_cfg_bearer(cfg: dict) -> str:
 
 
 def _gus_session_connected(suite: dict) -> bool:
-    """Each GUS login is its own check. A thrown adaptor call still leaves the CLI org."""
+    """Saved GUS sessions only. Opening the panel must not start a login."""
     checks = (
-        ("adaptor", lambda: dx_provider_connected("gus", timeout=4)),
         ("sf", sf_gus_connected),
         ("aisuite", lambda: aisuite_gus_connected(suite)),
     )
