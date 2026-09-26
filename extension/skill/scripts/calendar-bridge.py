@@ -5431,6 +5431,72 @@ def forget_prior_fetches(data: dict) -> None:
         data.pop(key, None)
 
 
+def _clips_from_inbox_text(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for block in re.split(r"\n(?=## (?:slack|mail) )", text or ""):
+        ident = re.search(r"## (?:slack|mail) (\S+)", block)
+        clip = re.search(r"(?m)^- clip: (.*)$", block)
+        if not ident or not clip:
+            continue
+        body = clip.group(1).strip()
+        if body and body not in ("(not opened)", "(no body)"):
+            found[ident.group(1)] = body
+    return found
+
+
+def _inbox_clip_index(data: dict) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for key in ("slackCandidates", "mailCandidates"):
+        for row in data.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("id") or "").strip()
+            body = str(row.get("openedClip") or row.get("snippet") or "").strip()
+            if ident and body:
+                found[ident] = body
+    try:
+        found.update(_clips_from_inbox_text(PLANNER_INBOX_TXT.read_text(encoding="utf-8")))
+    except OSError:
+        pass
+    return found
+
+
+def _stamp_inbox_peeks(data: dict) -> None:
+    """Keep the opened Slack or Mail text on the row so Peek can show it."""
+    if not isinstance(data, dict):
+        return
+    clips = _inbox_clip_index(data)
+    if not clips:
+        return
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        title = str(sec.get("title") or "")
+        is_slack = bool(re.match(r"slack\b", title, re.I))
+        is_mail = bool(re.match(r"(mail|email|gmail)\b", title, re.I))
+        if not is_slack and not is_mail:
+            continue
+        rows: list[dict] = []
+        for it in sec.get("items") or []:
+            if isinstance(it, dict):
+                rows.append(it)
+        for grp in sec.get("groups") or []:
+            if isinstance(grp, dict):
+                rows.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
+        for it in rows:
+            ident = str(it.get("id") or "").strip()
+            body = clips.get(ident) or ""
+            if not body:
+                continue
+            it["peek"] = {"summary": body[:1600]}
+            if is_slack and not str(it.get("detail") or "").strip():
+                it["detail"] = _inbox_plain(body, 160)
+            if is_slack and not it.get("kind"):
+                it["kind"] = "slack"
+            if is_mail and not it.get("kind"):
+                it["kind"] = "mail"
+
+
 def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -5598,6 +5664,7 @@ def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
             sanit = _sanitize_mod()
             sanit.peel_stray_inbox_rows(data)
             sanit.normalize_inbox_buckets(data)
+            _stamp_inbox_peeks(data)
         except Exception:
             pass
         try:

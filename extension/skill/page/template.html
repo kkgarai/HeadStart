@@ -2068,7 +2068,7 @@
       <p class="foot-lead">This page is the briefing. Peek a case for Trust, ICC, and what is still unanswered. The red line on the clock is now.</p>
       <ul class="foot-hints">
         <li><strong>Done</strong> strikes that block on Today’s plan and silences its reminder. Undo anytime. It does not delete Google Calendar.</li>
-        <li><strong>Peek</strong> opens the case or GUS remainder without leaving the board.</li>
+        <li><strong>Peek</strong> opens the case, a Slack thread, a mail, or a GUS remainder without leaving the board.</li>
         <li><strong>Refresh Calendar</strong> reloads this shift’s meetings — not cases or Slack.</li>
         <li><strong>Schedule Meeting</strong> opens Calendar compose. Save there, then refresh.</li>
         <li><strong>Add Task</strong> stamps a Google Task with that block’s start and end.</li>
@@ -3525,6 +3525,10 @@
       function canPeek(item) {
         if (!item || !item.id || item.kind === "break" || item.autoBreak) return false;
         var k = String(item.kind || "").toLowerCase();
+        var id = String(item.id || "");
+        if (k === "slack" || k === "mail" || k === "email" || k === "gmail" || id.indexOf("slack-") === 0 || id.indexOf("mail-") === 0) {
+          return !!((item.peek && item.peek.summary) || item.detail || item.snippet || item.openedClip);
+        }
         if (item.gusBot === true) return false;
         if (k === "meeting" || k === "assembled" || k === "slack" || k === "mail" || k === "invite" || k === "fyi") return false;
         if (item.eventId || item.htmlLink || item.invite === true) return false;
@@ -3596,6 +3600,8 @@
           if (s.slackUrl) {
             primary.push('<a class="btn slack" href="' + esc(s.slackUrl) + '" target="_blank" rel="noopener">' + esc(slackOpenLabel(s, s.slackUrl)) + "</a>");
           }
+          var slackPeek = peekButton(item);
+          if (slackPeek) primary.push(slackPeek);
           if (canComplete(item, sec)) primary.push(doneMark(s.id));
           var bitsSlack = [];
           if (primary.length) bitsSlack.push('<div class="action-row">' + primary.join("") + "</div>");
@@ -3606,6 +3612,8 @@
           if (s.mailUrl) {
             primary.push('<a class="btn mail" href="' + esc(s.mailUrl) + '" target="_blank" rel="noopener">Open Email</a>');
           }
+          var mailPeek = peekButton(item);
+          if (mailPeek) primary.push(mailPeek);
           if (canComplete(item, sec)) primary.push(doneMark(s.id));
           var bitsMail = [];
           if (primary.length) bitsMail.push('<div class="action-row">' + primary.join("") + "</div>");
@@ -5101,8 +5109,11 @@
         if (!raw || !el) return;
         state.peekId = id;
         var k = String(raw.kind || "").toLowerCase();
+        var rowId = String(raw.id || "");
+        var inbox = k === "slack" || k === "mail" || k === "email" || k === "gmail" || rowId.indexOf("slack-") === 0 || rowId.indexOf("mail-") === 0;
         var kicker = "Peek";
-        if (k === "gus" || raw.gusUrl || raw.workId) kicker = "GUS";
+        if (inbox) kicker = (k === "mail" || k === "email" || k === "gmail" || rowId.indexOf("mail-") === 0) ? "Mail" : "Slack";
+        else if (k === "gus" || raw.gusUrl || raw.workId) kicker = "GUS";
         else if (raw.caseUrl || raw.caseNumber || k === "case" || caseToken(raw)) kicker = "Case";
         document.getElementById("peek-kicker").textContent = kicker;
         document.getElementById("peek-title").textContent = raw.label || "Peek";
@@ -5117,15 +5128,17 @@
         }
         addParas((raw.peek && raw.peek.summary) || raw.summary);
         if (!paras.length) addParas(raw.detail);
+        if (!paras.length && inbox) addParas(raw.snippet || raw.openedClip);
         var html = "";
-        html += '<p class="peek-h">Summary</p>';
+        html += '<p class="peek-h">' + (inbox ? "Message" : "Summary") + "</p>";
         if (paras.length) {
           html += '<div class="peek-summary">';
           paras.forEach(function (s) { html += "<p>" + esc(s) + "</p>"; });
           html += "</div>";
         } else {
-          html += '<p class="peek-empty">No summary on this row.</p>';
+          html += '<p class="peek-empty">' + (inbox ? "No message on this row." : "No summary on this row.") + "</p>";
         }
+        if (!inbox) {
         html += '<p class="peek-h">Chronology</p>';
         var chrono = peekChronoList(raw);
         if (chrono.length) {
@@ -5147,6 +5160,7 @@
           html += "</ol>";
         } else {
           html += '<p class="peek-empty">No chronology on this row.</p>';
+        }
         }
         document.getElementById("peek-body").innerHTML = html;
         el.hidden = false;
