@@ -966,10 +966,15 @@ def stamp_needs_when(data: dict) -> None:
 
 def hoist_peek_fields(data: dict) -> None:
     """Page Peek is the model's analysis. Do not hoist raw activity as chronology."""
+    peeks = data.get("peeks") if isinstance(data.get("peeks"), dict) else {}
     for _sec, it in _walk_items(data):
+        num = re.sub(r"\D", "", str(it.get("caseNumber") or it.get("id") or ""))
+        spec = peeks.get(num) if len(num) >= 6 and isinstance(peeks.get(num), dict) else {}
         peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
-        summary = str(peek.get("summary") or it.get("summary") or "").strip()
+        summary = str(peek.get("summary") or it.get("summary") or spec.get("summary") or "").strip()
         chrono = peek.get("chronology") if isinstance(peek.get("chronology"), list) else None
+        if not chrono and isinstance(spec.get("chronology"), list):
+            chrono = spec.get("chronology")
         if chrono is None and it.get("activity") is not it.get("chronology"):
             chrono = it.get("chronology") if isinstance(it.get("chronology"), list) else []
         if not isinstance(chrono, list):
@@ -1244,6 +1249,27 @@ def _ranked_case_sections(data: dict) -> dict:
     return found
 
 
+def _gather_case_row(num: str) -> dict:
+    """A ranked case that was not already a card. The model chose the bucket."""
+    gather = _load_planner_gather()
+    src = {}
+    for row in gather.get("cases") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("caseNumber") or row.get("CaseNumber") or "") == num:
+            src = row
+            break
+    return {
+        "id": f"case-{num}",
+        "kind": "case",
+        "caseNumber": num,
+        "label": src.get("label") or f"#{num}",
+        "detail": src.get("detail") or "",
+        "status": src.get("status") or "",
+        "caseUrl": src.get("caseUrl") or "",
+    }
+
+
 def apply_ai_case_buckets(data: dict) -> None:
     """Peek ranking is the Needs us now / Follow-up due / Still watching split."""
     if not isinstance(data, dict):
@@ -1275,7 +1301,19 @@ def apply_ai_case_buckets(data: dict) -> None:
             seen.add(num)
             collected.append((name, it))
         sec["items"] = keep_other
-    if not collected:
+    ranked = any(
+        _ai_num_list(data, key)
+        for key in (
+            "needsUsNow",
+            "followUpDue",
+            "stillWatching",
+            "customerAskedMeeting",
+            "quickWins",
+            "beforeYouLogOff",
+            "tomorrowFirst",
+        )
+    )
+    if not collected and not ranked:
         apply_case_holds(data)
         demote_solution_provided_from_now(data)
         return
@@ -1305,6 +1343,20 @@ def apply_ai_case_buckets(data: dict) -> None:
         if not dest:
             continue
         buckets[dest].append(it)
+    placed = {_case_num(it) for rows in buckets.values() for it in rows if _case_num(it)}
+    placed.update(close_only)
+    for name, key in (
+        ("now", "needsUsNow"),
+        ("follow", "followUpDue"),
+        ("watch", "stillWatching"),
+        ("meeting", "customerAskedMeeting"),
+        ("quick", "quickWins"),
+    ):
+        for num in _ai_num_list(data, key) or []:
+            if not num or num in placed:
+                continue
+            buckets[name].append(_gather_case_row(num))
+            placed.add(num)
 
     def stamp(it: dict, prefix: str) -> None:
         num = _case_num(it)
@@ -2524,9 +2576,16 @@ def ensure_gus_bot_rows(data: dict) -> None:
     if not isinstance(data, dict):
         return
     gather = _load_planner_gather()
+    inbox_slack: list = []
+    try:
+        inbox = json.loads(pathlib.Path("/tmp/planner-inbox.json").read_text(encoding="utf-8"))
+        if isinstance(inbox, dict) and isinstance(inbox.get("slack"), list):
+            inbox_slack = inbox["slack"]
+    except (OSError, json.JSONDecodeError):
+        inbox_slack = []
     rows: list[dict] = []
     seen: set[str] = set()
-    for src in (gather.get("slackCandidates"), data.get("slackCandidates")):
+    for src in (inbox_slack, gather.get("slackCandidates"), data.get("slackCandidates")):
         if not isinstance(src, list):
             continue
         for row in src:
@@ -2534,7 +2593,7 @@ def ensure_gus_bot_rows(data: dict) -> None:
                 continue
             blob = " ".join(
                 str(row.get(key) or "")
-                for key in ("label", "channel", "from", "peer", "detail", "openedClip")
+                for key in ("label", "channel", "from", "peer", "detail", "snippet", "openedClip")
             )
             if row.get("gusBot") is not True and not re.search(
                 r"work notifier|gus bot|gus chatter|chatter feed", blob, re.I
@@ -2663,11 +2722,21 @@ def _gus_mail_url(row: dict) -> str:
     return ""
 
 
+def _mail_notice_blob(row: dict) -> str:
+    return " ".join(
+        str(row.get(key) or "")
+        for key in ("label", "detail", "snippet", "openedClip", "from")
+    )
+
+
+def _mail_richness(row: dict) -> int:
+    return len(str(row.get("openedClip") or "")) + len(str(row.get("snippet") or ""))
+
+
 def _gus_notice_mails(data: dict, gather: dict) -> list[dict]:
-    found: list[dict] = []
-    seen: set[str] = set()
+    found: dict[str, dict] = {}
     pools: list = []
-    for src in (gather.get("mailCandidates"), data.get("mailCandidates")):
+    for src in (data.get("mailCandidates"), gather.get("mailCandidates")):
         if isinstance(src, list):
             pools.extend(src)
     for sec in data.get("sections") or []:
@@ -2681,27 +2750,155 @@ def _gus_notice_mails(data: dict, gather: dict) -> list[dict]:
         if not isinstance(row, dict) or not _is_gus_notice_mail(row):
             continue
         ident = str(row.get("id") or row.get("messageId") or _gus_mail_url(row))
-        if not ident or ident in seen:
+        if not ident:
             continue
-        seen.add(ident)
-        found.append(row)
-    return found
+        prev = found.get(ident)
+        if prev is None or _mail_richness(row) > _mail_richness(prev):
+            found[ident] = row
+    return list(found.values())
+
+
+def _lap_case_num(blob: str) -> str:
+    m = re.search(r"Case Number:\s*(\d{5,})", blob, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"\b(\d{8,})\s*[—\-]\s*LAP-BlackTab-Bot", blob)
+    return m.group(1) if m else ""
+
+
+def _mail_notice_time(mail: dict) -> float:
+    blob = str(mail.get("openedClip") or mail.get("snippet") or "")
+    m = re.search(
+        r"Date:\s*([A-Za-z]{3},\s+\d{1,2}\s+[A-Za-z]{3}\s+\d{4}\s+[0-9:]+)",
+        blob,
+    )
+    if not m:
+        return 0.0
+    try:
+        from email.utils import parsedate_to_datetime
+
+        return parsedate_to_datetime(m.group(1)).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _lap_mail_item(mail: dict) -> dict:
+    """One GUS row for a LAP-BlackTab-Bot mention that matched no open work item."""
+    blob = _mail_notice_blob(mail)
+    num = _lap_case_num(blob)
+    status_m = re.search(
+        r"Status:\s*(.+?)(?:\s+More information|\s+Thank you!|\s+View post|$)",
+        blob,
+        re.I,
+    )
+    status = status_m.group(1).strip(" .") if status_m else ""
+    body_m = re.search(
+        r"Case Number:\s*\d+\s+Subject:\s*(.+?)\s+Company:\s*(.+?)\s+LAP Type:",
+        blob,
+        re.I,
+    )
+    subject = body_m.group(1).strip() if body_m else ""
+    company = body_m.group(2).strip() if body_m else ""
+    end_m = re.search(
+        r"end date-time\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})",
+        blob,
+        re.I,
+    )
+    end = end_m.group(1).strip() if end_m else ""
+    gus_m = re.search(r"https://gus\.my\.salesforce\.com/[A-Za-z0-9]+", blob)
+    if num and status:
+        label = f"LAP {num} · {status}"
+    elif num:
+        label = f"LAP {num}"
+    else:
+        label = str(mail.get("label") or "LAP-BlackTab-Bot")
+    bits = []
+    if company and subject:
+        bits.append(f"{company} — {subject}.")
+    elif company:
+        bits.append(company + ".")
+    elif subject:
+        bits.append(subject + ".")
+    if end:
+        bits.append(f"End {end} UTC has passed.")
+    if re.search(r"passed the end|assigned owner|manual revert", blob, re.I):
+        bits.append("You own it. Revert the org value off-peak, or close it after an extension.")
+    item = {
+        "id": "gusmail-" + (num or re.sub(r"[^A-Za-z0-9]", "", str(mail.get("id") or ""))[:24] or "lap"),
+        "kind": "gus",
+        "label": label[:140],
+        "detail": (" ".join(bits) or "LAP-BlackTab-Bot mentioned you.")[:220],
+        "mailUrl": _gus_mail_url(mail),
+    }
+    if gus_m:
+        item["gusUrl"] = gus_m.group(0)
+    return item
+
+
+def lap_mail_digest(mails: list) -> str:
+    """Digest blocks for LAP-BlackTab-Bot mention mail. The model writes the GUS row."""
+    pending: dict[str, dict] = {}
+    for mail in mails or []:
+        if not isinstance(mail, dict) or not _is_gus_notice_mail(mail):
+            continue
+        blob = _mail_notice_blob(mail)
+        if "LAP-BlackTab" not in blob and "lap-blacktab" not in blob.lower():
+            continue
+        key = _lap_case_num(blob) or str(mail.get("id") or "")
+        if not key:
+            continue
+        prev = pending.get(key)
+        if prev is None or _mail_notice_time(mail) >= _mail_notice_time(prev):
+            pending[key] = mail
+    blocks = []
+    for mail in pending.values():
+        item = _lap_mail_item(mail)
+        num = _lap_case_num(_mail_notice_blob(mail)) or item["id"]
+        lines = [
+            f"## lap-mail {num}",
+            f"- label: {item.get('label') or ''}",
+            f"- detail: {item.get('detail') or ''}",
+        ]
+        if item.get("mailUrl"):
+            lines.append(f"- mailUrl: {item['mailUrl']}")
+        if item.get("gusUrl"):
+            lines.append(f"- gusUrl: {item['gusUrl']}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def _attach_gus_notice_mail(items: list, mails: list[dict]) -> None:
+    pending: dict[str, dict] = {}
     for mail in mails:
-        blob = " ".join(str(mail.get(key) or "") for key in ("label", "detail", "snippet", "openedClip", "from"))
+        blob = _mail_notice_blob(mail)
         works, cases = _notice_ids(blob)
         url = _gus_mail_url(mail)
         if not url:
             continue
+        linked = False
         for it in items:
             if not isinstance(it, dict):
                 continue
             have_w, have_c = _notice_ids(f"{it.get('label') or ''} {it.get('detail') or ''}")
             if (works and works & have_w) or (cases and cases & have_c):
                 it["mailUrl"] = url
+                linked = True
                 break
+        if linked:
+            continue
+        key = _lap_case_num(blob) or url
+        prev = pending.get(key)
+        if prev is None or _mail_notice_time(mail) >= _mail_notice_time(prev):
+            pending[key] = mail
+    have = {str(it.get("id") or "") for it in items if isinstance(it, dict)}
+    labels = " ".join(str(it.get("label") or "") for it in items if isinstance(it, dict))
+    for mail in pending.values():
+        item = _lap_mail_item(mail)
+        num = _lap_case_num(_mail_notice_blob(mail))
+        if item["id"] in have or (num and num in labels):
+            continue
+        items.append(item)
+        have.add(item["id"])
 
 
 def _drop_gus_notice_mail(data: dict, mails: list[dict]) -> None:
@@ -2905,7 +3102,7 @@ def prune_done_key_map(keys: object, now_ms: int | None = None, tzname: str = ""
             if ms < id_cut:
                 continue
         elif is_durable_done_key(name):
-            if ms < durable_cut:
+            if ms < durable_cut or _generic_slot_key(name):
                 continue
         else:
             continue
@@ -2914,6 +3111,20 @@ def prune_done_key_map(keys: object, now_ms: int | None = None, tzname: str = ""
         kept = sorted(out.items(), key=lambda kv: kv[1], reverse=True)[:DONE_MAX_KEYS]
         out = dict(kept)
     return out
+
+
+_GENERIC_SLOT_LABEL = re.compile(
+    r"^(needs us now|follow-?ups?|take new cases|new cases|short break|open)$",
+    re.I,
+)
+
+
+def _generic_slot_key(name: str) -> bool:
+    """A shared clock label must not stay Done for 21 days and strike the next row in that hole."""
+    if not str(name).startswith("slot:"):
+        return False
+    label = str(name).split(":", 2)[-1].strip().lower()
+    return bool(_GENERIC_SLOT_LABEL.match(label))
 
 
 def _norm_done_url(raw: object) -> str:
@@ -2963,7 +3174,10 @@ def item_done_keys(it: dict) -> list[str]:
         keys.append("calurl:" + html)
     start = str(it.get("startStamp") or "").strip()
     lab = re.sub(r"\s+", " ", str(it.get("label") or "").strip().lower())
-    if start and lab:
+    # Case rows stay on case:. A shared label ("Needs Us Now") must not
+    # complete whichever case the next run places in that clock slot.
+    has_case = any(k.startswith("case:") for k in keys)
+    if start and lab and not has_case and not _GENERIC_SLOT_LABEL.match(lab):
         keys.append("slot:" + start + ":" + lab)
     cid = str(it.get("channelId") or it.get("slackChannel") or "").strip()
     ts = str(it.get("ts") or it.get("threadTs") or it.get("message_ts") or "").strip()
@@ -3110,13 +3324,11 @@ def item_matches_done(it: dict, keys: set[str], undone: set[str] | None = None) 
         return False
     item_keys = _done_keys_for_match(it)
     undone = undone or set()
-    if undone and any(k in undone for k in item_keys):
+    if undone and any(k in undone and not _channel_only_done_key(k) for k in item_keys):
         return False
     if any(k in keys for k in item_keys):
         return True
     if _item_case_nums(it) & _ledger_case_nums(keys):
-        return True
-    if _item_slack_dms(it) & _ledger_slack_dms(keys):
         return True
     if _item_mail_ids(it) & _ledger_mail_ids(keys):
         return True
@@ -3178,7 +3390,7 @@ def collect_done_keys(data: dict) -> set[str]:
             keys.update(durable)
         elif it.get("id"):
             keys.add("id:" + str(it.get("id")))
-    return {k for k in keys if k}
+    return {k for k in keys if k and not _channel_only_done_key(k)}
 
 
 def apply_done_keys(data: dict, keys: set[str], undone: set[str] | None = None) -> None:
@@ -3195,7 +3407,7 @@ def apply_done_keys(data: dict, keys: set[str], undone: set[str] | None = None) 
             it.pop("done", None)
             continue
         item_keys = _done_keys_for_match(it)
-        if undone and any(k in undone for k in item_keys):
+        if undone and any(k in undone and not _channel_only_done_key(k) for k in item_keys):
             it["done"] = False
             continue
         if item_matches_done(it, keys, undone):
@@ -3218,21 +3430,42 @@ def stamp_items_done_from_ledger(items: list, extra: dict | None = None, data: d
             it["done"] = True
 
 
+def _channel_only_done_key(key: str) -> bool:
+    """A whole Slack DM. Done is one message, so this key must not hide the next one."""
+    s = str(key or "")
+    if s.startswith("slackch:"):
+        return True
+    if re.fullmatch(r"id:slack-D[A-Z0-9]{8,}", s, re.I):
+        return True
+    if s.startswith("slack:"):
+        url = s[len("slack:") :]
+        if re.search(r"/archives/D[A-Z0-9]+$", url, re.I) and not re.search(r"/p\d{10,}", url):
+            return True
+    return False
+
+
+def _undone_map(rec: object) -> dict:
+    if not isinstance(rec, dict):
+        return {}
+    blob = rec.get("undone")
+    return dict(blob) if isinstance(blob, dict) else {}
+
+
 def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
-    """A Slack or Mail row already marked Done. Case Done does not hide a different message."""
-    if not isinstance(it, dict):
+    """A Slack or Mail message already marked Done. Undo, and a later message in that DM, stay open."""
+    if not isinstance(it, dict) or it.get("done") is False:
         return False
     if it.get("done") is True:
         return True
     keys = keys or set()
     if not keys:
         return False
-    if _item_slack_dms(it) & _ledger_slack_dms(keys):
-        return True
     if _item_mail_ids(it) & _ledger_mail_ids(keys):
         return True
     for key in item_done_keys(it):
-        if key.startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-")) and key in keys:
+        if _channel_only_done_key(key):
+            continue
+        if key.startswith(("slack:", "slackth:", "mail:", "mailid:", "id:mail-")) and key in keys:
             return True
     return False
 
@@ -3255,15 +3488,17 @@ def _done_ledger_files() -> list[pathlib.Path]:
 
 
 def disk_done_keys() -> set[str]:
-    """Done marks from this snapshot and earlier ones. A new run must omit those Slack and Mail rows."""
+    """Done marks for this loaded copy. An undo, and a whole-DM key, do not count."""
+    here = pathlib.Path(__file__).resolve().parent.parent / "out" / ".done-keys.json"
+    paths = [here] if here.is_file() else _done_ledger_files()[:1]
     keys: set[str] = set()
-    for path in _done_ledger_files():
+    for path in paths:
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        keys |= _ledger_keys(rec)
-    return keys
+        keys |= _ledger_keys(rec) - set(_undone_map(rec))
+    return {k for k in keys if not _channel_only_done_key(k)}
 
 
 def omit_done_inbox_rows(data: dict) -> None:
@@ -3329,19 +3564,29 @@ def drop_google_done_keys(keys: dict) -> dict:
 
 
 def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | None = None) -> None:
-    undone = {
-        key
-        for key in undone_item_keys(data)
-        if not str(key).startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-"))
-    }
+    now_ms = int(datetime.now().timestamp() * 1000)
+    undone_at: dict = {}
+    if isinstance(extra, dict):
+        undone_at.update(_undone_map(extra))
+    if isinstance(data.get("doneLedger"), dict):
+        undone_at.update(_undone_map(data.get("doneLedger")))
+    undone = set(undone_item_keys(data))
+    fresh: set[str] = set()
+    for _sec, it in _walk_items(data):
+        if it.get("done") is True:
+            fresh.update(k for k in item_done_keys(it) if not _channel_only_done_key(k))
+    for k in fresh:
+        undone_at.pop(k, None)
+    for k in undone:
+        undone_at[k] = now_ms
+    blocked = set(undone_at)
     keys = collect_done_keys(data)
     if isinstance(prev, dict):
         keys |= collect_done_keys(prev)
     keys |= _ledger_keys(extra)
-    keys -= undone
-    apply_done_keys(data, keys, undone)
+    keys -= blocked
+    apply_done_keys(data, keys, blocked)
     sync_queue_plan_blocks(data)
-    now_ms = int(datetime.now().timestamp() * 1000)
     blob = extra.get("keys") if isinstance(extra, dict) and isinstance(extra.get("keys"), dict) else {}
     merged = dict(blob) if isinstance(blob, dict) else {}
     if isinstance(data.get("doneLedger"), dict) and isinstance(data["doneLedger"].get("keys"), dict):
@@ -3350,15 +3595,16 @@ def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | Non
                 merged[k] = at
     for k in keys:
         merged[k] = merged.get(k) or now_ms
-    for k in undone:
-        merged.pop(k, None)
+    for k in list(merged):
+        if k in blocked or _channel_only_done_key(k):
+            merged.pop(k, None)
     merged = drop_google_done_keys(
         prune_done_key_map(merged, now_ms, str(data.get("timezone") or ""))
     )
     for _sec, it in _walk_items(data):
         if _is_google_cal_row(it):
             it.pop("done", None)
-    data["doneLedger"] = {"keys": merged, "updatedAt": now_ms}
+    data["doneLedger"] = {"keys": merged, "undone": undone_at, "updatedAt": now_ms}
     data["doneKeys"] = sorted(k for k in merged if is_durable_done_key(k))
 
 
@@ -4696,8 +4942,6 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
             slot = _take_gap(
                 gaps, max(10, need - shrink), occupied, after=after_at, avoid_buffer=avoid_buffer
             )
-        if not slot:
-            slot = _take_partial_gap(gaps, need, occupied, after=after_at)
         if not slot:
             return False
         used_mins = max(10, int((slot[1] - slot[0]).total_seconds() // 60))

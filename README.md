@@ -1,6 +1,6 @@
-# Day Planner
+# HeadStart
 
-Chrome extension for an engineer’s shift. Version **0.2.2.0 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.3.0 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
@@ -11,11 +11,11 @@ Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.
 Clone the public repository, then load that folder in Chrome. The folder contains `manifest.json`, the three installers, and an `extension` folder with the rest of the files.
 
 ```bash
-git clone https://github.com/kkgarai/day-planner.git
-cd day-planner
+git clone https://github.com/kkgarai/HeadStart.git
+cd HeadStart
 ```
 
-1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `day-planner` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
+1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `HeadStart` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
 
 2. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer. The page lists all three and marks the one for this computer.
 
@@ -49,7 +49,7 @@ Python 3 has to be on the machine already. The Windows file looks for `py -3`, t
 
 ## Uninstall the host
 
-Double-click the uninstaller in that same folder. Then open `chrome://extensions` and remove Day Planner. The uninstaller does not delete the cloned folder, and it does not remove the extension from Chrome.
+Double-click the uninstaller in that same folder. Then open `chrome://extensions` and remove HeadStart. The uninstaller does not delete the cloned folder, and it does not remove the extension from Chrome.
 
 | This computer | Double-click | What it runs |
 |---|---|---|
@@ -66,7 +66,7 @@ On every platform that helper:
 - Removes the host program, the version snapshots, and the cache.
 - Leaves the cloned folder and your Done marks in that folder.
 
-This host name is shared with any other Day Planner on the same computer. After uninstall, that other copy needs its installer again.
+This host name is shared with any other HeadStart on the same computer. After uninstall, that other copy needs its installer again.
 
 ## Update
 

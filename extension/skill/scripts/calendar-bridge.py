@@ -582,30 +582,27 @@ SECRET_RE = re.compile(
 )
 PLAN_PROMPT = (
     "PLAN_SYSTEM is loaded. The BRIEF is an index only. "
-    "Full text is planner-digest.txt and planner-inbox.txt in this working directory "
-    "(also /tmp/planner-digest.txt and /tmp/planner-inbox.txt). "
-    "You decide: one Read of a file, or forward chunks if one Read would overload you. "
-    "Each span once, in order. Do not re-read a span. Do not start over. "
+    "Case threads are planner-digest.txt in this working directory. "
+    "If that file lists parts, Read every part once, in order. Do not skip a part. "
+    "Do not Read /tmp/planner-digest.txt. That combined file is too large for one Read. "
+    "Slack and Mail were already classified. Do not Read planner-inbox.txt in this pass. "
     "You summarize. Python did not shorten those files. "
     "Do not Read /tmp/plan.json. "
-    "Mandatory every run, no exception: OrgCS (threads + Initial Response + GUS related list), GUS (Support Contact, Follow, investigation SLA fields, LAP start/end), Slack, Calendar, Mail. Analyze all of them. "
-    "Python already fetched: digest = this run's live OrgCS comments+emails+IR+related list+GUS on **open owned** cases only; "
-    "inbox.txt = opened Slack leftovers + full unread mail bodies. "
+    "Mandatory every run, no exception: OrgCS (threads + Initial Response + GUS related list), GUS (Support Contact, Follow, investigation SLA fields, LAP, ## lap-mail), Calendar. "
+    "Python already fetched: digest = this run's live OrgCS comments+emails+IR+related list+GUS+## lap-mail on **open owned** cases. "
     "You write every peeks.<caseNumber>.summary (4–8 sentences). Python does not. "
-    "You still decide Peek, keep/drop, Not opened vs Needs a reply, GUS rows, and ranks from those clips. "
+    "You still decide Peek, GUS rows, and ranks from the digest. Slack and Mail keep/drop is already done. "
     "Do not write todayPlan. Leave todayPlan as []. Today's plan is built after this analysis finishes. "
-    "Python does not classify Slack/Mail/GUS. Never Slack MCP. Never Gmail batch. Never body SOQL. Never related/GUS MCP. "
+    "Python does not rank cases or write Peek. Never Slack MCP. Never Gmail batch. Never body SOQL. Never related/GUS MCP. "
     "Who has the ball is last customer / last public in this digest, not an older sandbox-login beat. Need More Information / last ask is the customer → bucket watch, not Investigate on todayPlan. "
     "Pending Initial Response is case SLA. A 'will breach SLA in 30 minutes' mail is Needs us now until the public comment is on the case. Investigation SLA is the stored fields plus slamonitor mail. LAP uses requested start and end. Python does not mark overdue or approaching. "
-    "ONE Write of /tmp/plan-ai.json: peeks + ranks + slack + mail + gus, todayPlan [], aiAnalyzed true, sourcesAnalyzed true. "
-    "inboxReviewed true only after you classify every ## slack / ## mail clip. "
-    "gusReviewed true only after you classify ## gus / gusCandidates / IR / related list. "
-    "Empty inbox.txt is not Slack/Mail — clear unless gather slackFetchOk / mailFetchOk is true. "
-    "gusFetchOk false is not GUS — clear. You classify Slack from clip + - reactions: — Python does not keep/drop. "
-    "A failed tool is not a stop. Finish from the digest and inbox already on disk and still Write /tmp/plan-ai.json. "
+    "ONE Write of /tmp/plan-ai.json: peeks + ranks + gus, todayPlan [], aiAnalyzed true, sourcesAnalyzed true. Do not write slack or mail. "
+    "gusReviewed true only after you classify ## gus, ## lap, ## lap-mail, IR, and the related list. "
+    "gusFetchOk false is not GUS — clear. A ## lap-mail block means GUS is not clear. "
+    "A failed tool is not a stop. Finish from the digest already on disk and still Write /tmp/plan-ai.json. "
     "If you are shown a failure list, you fix it in this run. Do not leave the error for someone else. "
     "Then stop. Reply: published. Do not a second write. "
-    "Do not skip a PLAN_SYSTEM rule. Peek every gather case. Classify every Slack, Mail, and GUS clip. "
+    "Do not skip a PLAN_SYSTEM rule. Peek every gather case. Classify every ## gus, ## lap, and ## lap-mail block. "
     "Use an opened Sev-1 channel name from the BRIEF. A case is in beforeYouLogOff or tomorrowFirst, never both."
 )
 
@@ -625,7 +622,8 @@ def planner_mcp_prompt(runner: str = "") -> str:
     down = {str(row.get("id") or "") for row in rows if row.get("status") != "connected"}
     lines = [
         "This runner's planner MCPs: " + ", ".join(bits) + ".",
-        "BRIEF is an index. Read planner-digest.txt and planner-inbox.txt yourself, one Read or forward chunks. "
+        "BRIEF is an index. Read planner-digest.txt in this working directory. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. "
         "Never Slack MCP. Never CaseComment/EmailMessage/CaseFeed SOQL. "
         "ONE Write /tmp/plan-ai.json with peeks, ranks, and gus. Leave todayPlan as []. Do not write slack or mail. "
         "Do not skip a PLAN_SYSTEM section. Peek every gather case. Classify GUS. Then stop. "
@@ -2603,7 +2601,7 @@ def unpublished_page_html() -> bytes:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>engineer day planner</title>
+  <title>HeadStart</title>
   <script>
     (function () {
       try {
@@ -2888,14 +2886,30 @@ def save_done_ledger_from_data(data: dict) -> None:
     sanit = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sanit)
     rec = load_done_ledger()
-    keys = rec.get("keys") if isinstance(rec.get("keys"), dict) else {}
+    keys = dict(rec.get("keys") if isinstance(rec.get("keys"), dict) else {})
+    undone = dict(sanit._undone_map(rec))
+    page_led = data.get("doneLedger") if isinstance(data.get("doneLedger"), dict) else {}
+    undone.update(sanit._undone_map(page_led))
     now_ms = int(time.time() * 1000)
-    keys = dict(keys)
-    for k in sanit.collect_done_keys(data):
+    fresh = set()
+    for _sec, it in sanit._walk_items(data):
+        if it.get("done") is True:
+            fresh.update(k for k in sanit.item_done_keys(it) if not sanit._channel_only_done_key(k))
+    for k in fresh:
+        undone.pop(k, None)
         keys[k] = keys.get(k) or now_ms
     for k in sanit.undone_item_keys(data):
         keys.pop(k, None)
+        undone[k] = now_ms
+    for k in sanit.collect_done_keys(data):
+        if k in undone or sanit._channel_only_done_key(k):
+            continue
+        keys[k] = keys.get(k) or now_ms
+    for k in list(keys):
+        if k in undone or sanit._channel_only_done_key(k):
+            keys.pop(k, None)
     rec["keys"] = sanit.drop_google_done_keys(sanit.prune_done_key_map(keys, now_ms))
+    rec["undone"] = sanit.prune_done_key_map(undone, now_ms)
     rec["updatedAt"] = now_ms
     path = done_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -4414,6 +4428,7 @@ def fill_slack_leftovers(data: dict) -> None:
         gus_notice_query("GUS Bot"),
         gus_notice_query("Work Notifier"),
         gus_notice_query("GUS Chatter"),
+        gus_notice_query("chatter feed"),
     )
     gus_work = gus_notice_query("W-")
     gus_work["keywords"] = ["W-"]
@@ -5055,21 +5070,24 @@ def evidence_from_seed(seeded: dict) -> dict:
             meetings = []
             append_plan_step(kind="log", label="Primary calendar fetch failed · " + seeded["calendarFetchError"])
     clock = _gather_plan_clock(seeded, meetings)
-    forget_prior_fetches(seeded)
-    try:
-        fill_slack_leftovers(seeded)
-    except Exception as exc:
-        seeded["slackFetchOk"] = False
-        seeded["slackFetchError"] = clip(str(exc), 180)
-        seeded["slackCandidates"] = []
-        append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
-    try:
-        fill_mail_leftovers(seeded)
-    except Exception as exc:
-        seeded["mailFetchOk"] = False
-        seeded["mailFetchError"] = clip(str(exc), 180)
-        seeded["mailCandidates"] = []
-        append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
+    if seeded.get("_inboxOpened") is not True:
+        forget_prior_fetches(seeded)
+        try:
+            fill_slack_leftovers(seeded)
+        except Exception as exc:
+            seeded["slackFetchOk"] = False
+            seeded["slackFetchError"] = clip(str(exc), 180)
+            seeded["slackCandidates"] = []
+            append_plan_step(kind="log", label="Slack leftover fetch failed · " + seeded["slackFetchError"])
+        try:
+            fill_mail_leftovers(seeded)
+        except Exception as exc:
+            seeded["mailFetchOk"] = False
+            seeded["mailFetchError"] = clip(str(exc), 180)
+            seeded["mailCandidates"] = []
+            append_plan_step(kind="log", label="Mail leftover fetch failed · " + seeded["mailFetchError"])
+        seeded["_inboxOpened"] = True
+        seeded["_mailFetchTried"] = True
     def _slim_cand(row: dict, keys: tuple[str, ...]) -> dict:
         out = {}
         for k in keys:
@@ -5215,6 +5233,8 @@ def digest_activity_stats() -> tuple[int, int]:
                 empty = True
             continue
         if started and ln.strip() and "no clipped comment/email yet" not in ln:
+            if re.match(r"^-\s+(ir|gus related|live):", ln.strip(), re.I):
+                continue
             empty = False
     if started and not empty:
         filled += 1
@@ -5236,6 +5256,19 @@ def _id_only_candidates(rows, extra: tuple[str, ...] = ()) -> list[dict]:
             item["unread"] = bool(row.get("unread"))
         if "lastHumanIsMe" in row:
             item["lastHumanIsMe"] = bool(row.get("lastHumanIsMe"))
+        blob = " ".join(str(row.get(key) or "") for key in ("label", "snippet", "openedClip", "from"))
+        gus_notice = row.get("gusBot") is True or bool(
+            re.search(r"chatter feed|gus bot|work notifier|gus chatter", blob, re.I)
+        )
+        if gus_notice:
+            item["gusBot"] = True
+            for key in ("label", "slackUrl", "channelId", "ts", "from", "mailUrl"):
+                val = row.get(key)
+                if val:
+                    item[key] = str(val)[:180]
+            snip = row.get("snippet") or row.get("openedClip") or ""
+            if snip:
+                item["snippet"] = str(snip)[:400]
         for key in extra:
             val = row.get(key)
             if val:
@@ -5390,6 +5423,7 @@ def forget_prior_fetches(data: dict) -> None:
         "mailFetchError",
         "mailCandidates",
         "_mailFetchTried",
+        "_inboxOpened",
         "gusFetchOk",
         "gusFetchError",
         "gusCandidates",
@@ -5644,9 +5678,11 @@ def repair_plan_prompt(fails: list[str]) -> str:
         "The page did not publish. These are the only blockers. Find a way through them "
         "from the files already on disk. Do not re-gather. Do not Slack, Gmail, or SOQL. "
         "Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
-        "Read /tmp/plan-ai.json once. For a missing Peek, Read /tmp/planner-digest.txt once and write "
+        "Read /tmp/plan-ai.json once. For a missing Peek, Read planner-digest.txt in this working directory. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
         "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
-        "Keep every other peek, rank, slack, mail, gus, and todayPlan row. "
+        "Keep every other peek, rank, and gus row. Leave todayPlan as []. Do not write slack or mail. "
+        "If the digest has a ## lap-mail block, the gus row label includes that LAP case number. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
         + lines
     )
@@ -5657,8 +5693,10 @@ def missing_plan_prompt() -> str:
         "You stopped before /tmp/plan-ai.json existed, so nothing can publish. "
         "That file is the page. Use the digest and inbox already on disk. "
         "Do not re-gather. Do not Slack, Gmail, or SOQL. "
-        "Write the complete /tmp/plan-ai.json now (Peek for every gather case, slack, mail, gus, todayPlan, "
-        "aiAnalyzed true, sourcesAnalyzed true). Then stop."
+        "Write the complete /tmp/plan-ai.json now (Peek for every gather case, gus, todayPlan [], "
+        "aiAnalyzed true, sourcesAnalyzed true). Do not write slack or mail. "
+        "Read planner-digest.txt in the working directory, every part, in order. "
+        "Do not Read /tmp/planner-digest.txt. Do not Read planner-inbox.txt. Then stop."
     )
 
 
@@ -5808,12 +5846,33 @@ TODAY_PLAN_SYSTEM = """
 Build Today's plan only. Do not Read files. Do not rewrite /tmp/plan-ai.json.
 Write /tmp/plan-today.json once: {"todayPlan":[...]}.
 Each row: id, label, minutes, kind. Case windows also get caseNumber.
-Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row), Slack and Mail only if the brief still has leftovers, promised close near logout (id plan-close).
+Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
 Short breaks: 10–15 minutes, kind break, id plan-break-1 then plan-break-2. At most 4 a day. At least 45 minutes of other work between them. Never within 45 minutes before or after Breakfast, Lunch, Dinner, or a Snack already on the calendar. Not the last block of the shift. If freeMinutes is at least 180 and a break fits that gap, add one.
 Do not write an Open row. Leftover holes stay empty. The page draws them.
 End of Day: no Take New Cases and no short break. Named work only if the brief still has something owed. Empty todayPlan is allowed.
 Do not invent a meal. Do not copy Google meetings into todayPlan. Then stop. Reply: planned.
 """.strip()
+
+
+def _inbox_leftover_counts() -> tuple[int, int]:
+    """Kept Slack and Mail rows from the inbox pass. The clock brief lists these counts."""
+    try:
+        loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0, 0
+    if not isinstance(loaded, dict):
+        return 0, 0
+
+    def count(block: object) -> int:
+        if not isinstance(block, dict):
+            return 0
+        n = 0
+        for group in block.get("groups") or []:
+            if isinstance(group, dict):
+                n += len(group.get("items") or [])
+        return n
+
+    return count(loaded.get("slack")), count(loaded.get("mail"))
 
 
 def today_plan_user_prompt() -> str:
@@ -5847,6 +5906,9 @@ def today_plan_user_prompt() -> str:
             if len(num) >= 6:
                 nums.append(num)
         lines.append(f"{key}: {', '.join(nums[:8]) or 'none'}")
+    slack_n, mail_n = _inbox_leftover_counts()
+    lines.append(f"slack leftovers: {slack_n}")
+    lines.append(f"mail leftovers: {mail_n}")
     blob = "\n".join(lines)
     if len(blob) > 2500:
         blob = blob[:2499].rstrip() + "…"
@@ -5995,7 +6057,7 @@ Slack:
 
 Mail:
 - Drop done:true.
-- Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail.
+- Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail. Sandbox success is an operation-completed notice with no LAP case number. LAP-BlackTab-Bot mention mail is not in this file.
 - Drop meeting mail that only schedules, reschedules, cancels, or records accepted, declined, tentative, or maybe. Those already show on the calendar.
 - Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, that still needs a look.
 - Keep a case SLA mail from no.reply@salesforce.com whose subject is "Case <number> will breach SLA in 30 minutes" or "Action Required | SLA Missed". The body names the case, the Response Target, and the ask (accept and a public comment, or close the loop).
@@ -6116,110 +6178,8 @@ def install_today_plan(run_cli) -> None:
 
 
 def finish_plan_from_evidence() -> bool:
-    """Fill holes the model left, using this run's digest, then let publish proceed."""
-    gather: dict = {}
-    digest_fields: dict[str, dict[str, str]] = {}
-    try:
-        loaded = json.loads(pathlib.Path("/tmp/planner-gather.json").read_text(encoding="utf-8"))
-        if isinstance(loaded, dict):
-            gather = loaded
-    except (OSError, json.JSONDecodeError):
-        gather = {}
-    try:
-        digest_fields = _digest_case_fields(
-            pathlib.Path("/tmp/planner-digest.txt").read_text(encoding="utf-8")
-        )
-    except OSError:
-        digest_fields = {}
-    ai_path = pathlib.Path("/tmp/plan-ai.json")
-    ai: dict = {}
-    try:
-        loaded_ai = json.loads(ai_path.read_text(encoding="utf-8"))
-        if isinstance(loaded_ai, dict):
-            ai = loaded_ai
-    except (OSError, json.JSONDecodeError):
-        ai = {}
-    if not gather and not digest_fields and not ai:
-        return False
-    peeks = ai.get("peeks") if isinstance(ai.get("peeks"), dict) else {}
-    cases = list(gather.get("cases") or [])
-    numbers = []
-    case_by: dict[str, dict] = {}
-    for row in cases:
-        if isinstance(row, dict):
-            num = str(row.get("caseNumber") or row.get("CaseNumber") or "").strip()
-            if num:
-                numbers.append(num)
-                case_by[num] = row
-    if not numbers:
-        numbers = list(digest_fields.keys())
-    for num in numbers:
-        spec = peeks.get(num) if isinstance(peeks.get(num), dict) else {}
-        summary = str(spec.get("summary") or "").strip()
-        if summary and not _is_stub_peek(summary):
-            peeks[num] = spec
-            continue
-        fields = digest_fields.get(num) or {}
-        if not fields and not summary:
-            row = case_by.get(num) or {}
-            label = str(row.get("label") or num)[:160]
-            status = str(row.get("status") or "open")[:40]
-            detail = str(row.get("detail") or "").strip()[:180]
-            spec = dict(spec)
-            spec["summary"] = (
-                f"Case {num} is {status}. "
-                f"The subject is {label}. "
-                + (f"{detail}. " if detail else "No newer thread line was in this run's digest. ")
-            )
-            spec.setdefault("chronology", [])
-            peeks[num] = spec
-            continue
-        spec = dict(spec)
-        spec["summary"] = _peek_from_digest(num, fields) if fields else summary
-        if not spec.get("chronology"):
-            spec["chronology"] = _chronology_from_digest(fields)
-        peeks[num] = spec
-    for cand in gather.get("slackCandidates") or []:
-        if not isinstance(cand, dict) or not cand.get("sev1Case"):
-            continue
-        num = str(cand.get("sev1Case") or "")
-        channel = str(cand.get("channel") or "").lstrip("#").strip()
-        spec = peeks.get(num) if isinstance(peeks.get(num), dict) else None
-        if not spec or len(channel) < 3:
-            continue
-        if channel.lower() not in str(spec.get("summary") or "").lower():
-            spec["summary"] = str(spec.get("summary") or "").rstrip(".") + f". Slack channel {channel} was opened."
-            peeks[num] = spec
-    ai["peeks"] = peeks
-    ai["aiAnalyzed"] = True
-    ai["sourcesAnalyzed"] = True
-    for key in (
-        "needsUsNow",
-        "followUpDue",
-        "stillWatching",
-        "quickWins",
-        "customerAskedMeeting",
-        "beforeYouLogOff",
-        "tomorrowFirst",
-    ):
-        if not isinstance(ai.get(key), list):
-            ai[key] = []
-    ai["tomorrowFirst"] = [row for row in (ai.get("tomorrowFirst") or [])]
-    if not merge_classified_inbox():
-        if not isinstance(ai.get("slack"), dict):
-            ai["slack"] = {"groups": []}
-        if not isinstance(ai.get("mail"), dict):
-            ai["mail"] = {"groups": []}
-        ai["inboxReviewed"] = False
-    if gather.get("gusFetchOk") is True:
-        ai["gusReviewed"] = True
-    if not isinstance(ai.get("gus"), dict):
-        ai["gus"] = {"groups": []}
-    try:
-        ai_path.write_text(json.dumps(ai, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        return False
-    return True
+    """Peek and aiAnalyzed come from the model. Do not fill them here."""
+    return False
 
 
 def publish_plan_inprocess(path: pathlib.Path) -> str:
@@ -9364,6 +9324,35 @@ def _orgcs_identity_file() -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+_MD_LINK_RE = re.compile(r"^\[([^\]]+)\]\(https://[^)]+\)$")
+
+
+def _unwrap_sf_value(val):
+    if isinstance(val, str):
+        match = _MD_LINK_RE.match(val.strip())
+        return match.group(1) if match else val
+    if isinstance(val, dict):
+        return {key: _unwrap_sf_value(item) for key, item in val.items()}
+    if isinstance(val, list):
+        return [_unwrap_sf_value(item) for item in val]
+    return val
+
+
+def _soql_record_list(obj: object) -> list | None:
+    if not isinstance(obj, dict):
+        return None
+    records = obj.get("records")
+    if isinstance(records, list):
+        return records
+    meta = obj.get("metadata")
+    if isinstance(meta, dict) and isinstance(meta.get("records"), list):
+        return meta["records"]
+    inner = obj.get("result")
+    if isinstance(inner, dict):
+        return _soql_record_list(inner)
+    return None
+
+
 def parse_soql_records(text: str) -> list:
     raw = (text or "").strip()
     if not raw:
@@ -9380,14 +9369,10 @@ def parse_soql_records(text: str) -> list:
                 return []
         else:
             return []
-    if isinstance(obj, dict):
-        records = obj.get("records")
-        if isinstance(records, list):
-            return [row for row in records if isinstance(row, dict)]
-        inner = obj.get("result")
-        if isinstance(inner, dict) and isinstance(inner.get("records"), list):
-            return [row for row in inner["records"] if isinstance(row, dict)]
-    return []
+    records = _soql_record_list(obj)
+    if not isinstance(records, list):
+        return []
+    return [_unwrap_sf_value(row) for row in records if isinstance(row, dict)]
 
 
 def parse_omni_presence(text: str) -> tuple[str, list]:
@@ -11277,10 +11262,8 @@ def gus_soql(soql: str) -> list:
     try:
         text = mcp_call_named(GUS_MCP_NAMES, "query_gus_records", {"soql": soql}, timeout=28)
         recs = parse_soql_records(text)
-        if recs:
-            return recs
         raw = str(text or "")
-        if re.search(r'"records"\s*:\s*\[', raw) or re.search(r'"totalSize"\s*:', raw):
+        if recs or re.search(r'"total_count"\s*:|"totalSize"\s*:', raw):
             return recs
     except Exception as exc:
         last = exc
@@ -11823,6 +11806,29 @@ def append_related_to_digest(seeded: dict) -> None:
     append_gus_blocks_to_digest(seeded)
 
 
+def append_lap_mail_to_digest(seeded: dict) -> None:
+    """Put opened LAP-BlackTab-Bot mail on the digest. The inbox file does not include it."""
+    mails = seeded.get("mailCandidates") if isinstance(seeded, dict) else None
+    if not isinstance(mails, list) or not mails:
+        return
+    try:
+        text = _sanitize_mod().lap_mail_digest(mails).strip()
+    except Exception:
+        return
+    if not text:
+        return
+    try:
+        prev = PLANNER_DIGEST_FILE.read_text(encoding="utf-8") if PLANNER_DIGEST_FILE.is_file() else ""
+    except OSError:
+        return
+    if "## lap-mail " in prev:
+        return
+    try:
+        PLANNER_DIGEST_FILE.write_text(prev.rstrip() + "\n\n" + text + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def append_case_holds_to_digest() -> None:
     try:
         holds = _sanitize_mod().load_case_holds()
@@ -11873,6 +11879,7 @@ def attach_clipped_activity(seeded: dict, evidence: dict) -> dict:
     inject_ir_related_into_digest(seeded)
     append_gus_blocks_to_digest(seeded)
     append_case_holds_to_digest()
+    append_lap_mail_to_digest(seeded)
     refreshed = write_planner_gather(evidence_from_seed(seeded))
     n_digest, n_filled = digest_activity_stats()
     gchars = 0
@@ -11907,7 +11914,133 @@ def orgcs_username(email: str) -> str:
     return local + "@orgcs.com"
 
 
+_THREAD_PARENT_RE = re.compile(r"ParentId\s*=\s*'?(500[A-Za-z0-9]{12,18})'?", re.I)
+_THREAD_IN_RE = re.compile(r"ParentId\s+IN\s*\(([^)]*)\)", re.I)
+QUERIED_THREADS_FILE = pathlib.Path("/tmp/case-thread-queried.json")
+_THREAD_KINDS = ("comment", "email", "feed")
+
+
+def thread_query_kind(soql: str) -> str:
+    low = soql.lower()
+    if "from casecomment" in low:
+        return "comment"
+    if "from emailmessage" in low:
+        return "email"
+    if "from casefeed" in low:
+        return "feed"
+    return ""
+
+
+def thread_query_ids(soql: str) -> set[str]:
+    ids = set(_THREAD_PARENT_RE.findall(soql))
+    inn = _THREAD_IN_RE.search(soql)
+    if inn:
+        ids.update(re.findall(r"500[A-Za-z0-9]{12,18}", inn.group(1)))
+    return ids
+
+
+def soql_from_input(inp: dict) -> str:
+    if not isinstance(inp, dict):
+        return ""
+    for key in ("q", "query", "soql", "sql"):
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            return val
+    return ""
+
+
+def note_thread_query(flags: dict, soql: str) -> None:
+    kind = thread_query_kind(soql)
+    ids = thread_query_ids(soql)
+    if not kind or not ids:
+        return
+    flags["pending_thread"] = (kind, ids)
+
+
+def cover_pending_thread(flags: dict) -> None:
+    pending = flags.get("pending_thread")
+    if not pending:
+        return
+    kind, ids = pending
+    bag = flags.setdefault("queried", {})
+    for cid in ids:
+        bag.setdefault(cid, set()).add(kind)
+    flags["pending_thread"] = None
+
+
+def save_queried_threads(flags: dict) -> None:
+    prev: dict = {}
+    try:
+        loaded = json.loads(QUERIED_THREADS_FILE.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            prev = loaded
+    except (OSError, json.JSONDecodeError):
+        prev = {}
+    for cid, kinds in (flags.get("queried") or {}).items():
+        have = set(prev.get(cid) or [])
+        have.update(kinds)
+        prev[str(cid)] = sorted(have)
+    try:
+        QUERIED_THREADS_FILE.write_text(json.dumps(prev), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def owned_case_ids_on_disk() -> list[str]:
+    try:
+        data = json.loads(OWNED_CASES_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    recs = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(recs, list):
+        return []
+    out = []
+    seen = set()
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        cid = str(rec.get("Id") or "")
+        if cid.startswith("500") and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def fetch_queries_done(flags: dict) -> bool:
+    ids = owned_case_ids_on_disk()
+    if not ids:
+        return False
+    queried = flags.get("queried") or {}
+    need = set(_THREAD_KINDS)
+    for cid in ids:
+        if need - set(queried.get(cid) or ()):
+            return False
+    return True
+
+
+def missing_thread_ids() -> list[str]:
+    try:
+        queried = json.loads(QUERIED_THREADS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        queried = {}
+    if not isinstance(queried, dict):
+        queried = {}
+    need = set(_THREAD_KINDS)
+    missing = []
+    for cid in owned_case_ids_on_disk():
+        if need - set(queried.get(cid) or ()):
+            missing.append(cid)
+    return missing
+
+
 def fetch_prompt_for_ids(ids: list[str]) -> str:
+    if ids:
+        return (
+            "Open cases are already in /tmp/owned-cases.json. Do not query User or Case. "
+            "For each ParentId below, run CaseComment, EmailMessage, and CaseFeed. "
+            "Use the same LIMIT on each. Do not stop until every id has all three queries. "
+            "ParentIds: " + " ".join(ids)
+        )
     username = orgcs_username(resolve_engineer_email())
     user_query = (
         "SELECT Id, Name, Title, Email, Username, AboutMe, Engineer_Shift__c, Manager.Name "
@@ -11929,8 +12062,9 @@ def fetch_prompt_for_ids(ids: list[str]) -> str:
         "FROM Case WHERE OwnerId = '<that Id>' AND IsClosed = false "
         "ORDER BY LastModifiedDate DESC LIMIT 80 (never Description). "
         "Write {\"records\":[...]} to /tmp/owned-cases.json. "
-        "Then three soqlQuery calls with ParentId IN those Ids only "
-        "(CaseComment, EmailMessage with TextBody, CaseFeed). "
+        "Then one CaseComment query, one EmailMessage query, and one CaseFeed query "
+        "for every open case id. Use the same LIMIT on each. "
+        "Do not stop after the first case. "
         "EmailMessage is mandatory — do not skip it. Never fetch a closed or not-owned case. Reply: fetched"
     )
 
@@ -12035,13 +12169,12 @@ def run_orgcs_fetch_sidecar(env: dict, chosen: str, ids: list[str]) -> int:
                 handle_stream_line(line, flags)
                 if flags.pop("need_sweep", False):
                     stub_stale_planner_overflows()
-                objs = flags.get("thread_objects") or set()
-                if "comment" in objs and "email" in objs:
-                    if "feed" in objs or time.monotonic() > deadline - 20:
-                        break
+                if flags.get("fetch_mode") and fetch_queries_done(flags):
+                    break
     except subprocess.TimeoutExpired:
         pass
     finally:
+        save_queried_threads(flags)
         stop_watch.set()
         watch.join(timeout=2)
         stub_stale_planner_overflows()
@@ -12109,7 +12242,18 @@ def gather_clipped_case_threads(
             append_plan_step(kind="log", label=f"Python clipped comments/email on {n_py} cases")
             return attach_clipped_activity(seeded, evidence)
     if runner_id == "claude" or find_claude_bin():
+        try:
+            QUERIED_THREADS_FILE.unlink()
+        except OSError:
+            pass
         run_orgcs_fetch_sidecar(env, chosen, [])
+        missing = missing_thread_ids()
+        if missing:
+            append_plan_step(
+                kind="log",
+                label=f"Case threads still missing on {len(missing)} cases",
+            )
+            run_orgcs_fetch_sidecar(env, chosen, missing)
         rows = fetch_owned_open_cases()
         snapshot_ok = bool(rows) or _owned_fetch_ok()
         if snapshot_ok:
@@ -12174,6 +12318,7 @@ def handle_stream_line(line: str, flags: dict) -> None:
         if not isinstance(inp, dict):
             inp = {}
         ingest_read_overflow_path(name, inp, flags)
+        note_thread_query(flags, soql_from_input(inp))
         append_plan_step(kind="tool", label=label_tool(name), detail=tool_detail(name, inp))
         return
     if et in {"session.error", "message.error"}:
@@ -12228,6 +12373,7 @@ def handle_stream_line(line: str, flags: dict) -> None:
                 if not isinstance(inp, dict):
                     inp = {}
                 ingest_read_overflow_path(name, inp, flags)
+                note_thread_query(flags, soql_from_input(inp))
                 append_plan_step(kind="tool", label=label, detail=tool_detail(name, inp))
         return
     if et == "user":
@@ -12237,6 +12383,10 @@ def handle_stream_line(line: str, flags: dict) -> None:
                 continue
             if block.get("type") != "tool_result":
                 continue
+            if block.get("is_error"):
+                flags["pending_thread"] = None
+            else:
+                cover_pending_thread(flags)
             ingest_overflow_from_tool_result(block.get("content"), flags)
             flags["need_sweep"] = True
             err = bool(block.get("is_error"))
@@ -12363,6 +12513,34 @@ def _is_custom_plan_block(item: dict) -> bool:
     return False
 
 
+def shift_logout_ms(data: dict, now: datetime | None = None) -> int:
+    """Logout for this shift, in epoch ms. An end at or before login is the next morning."""
+    if now is None or now.tzinfo is None:
+        now, _ = shift_now(data)
+    end_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftEnd") or "").strip())
+    if not end_match:
+        return 0
+    end = now.replace(
+        hour=int(end_match.group(1)),
+        minute=int(end_match.group(2)),
+        second=0,
+        microsecond=0,
+    )
+    start_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftStart") or "").strip())
+    if start_match:
+        start = now.replace(
+            hour=int(start_match.group(1)),
+            minute=int(start_match.group(2)),
+            second=0,
+            microsecond=0,
+        )
+        if end <= start:
+            end = end + timedelta(days=1)
+        if now < start and end - timedelta(days=1) > now:
+            end = end - timedelta(days=1)
+    return int(end.timestamp() * 1000)
+
+
 def snapshot_payload() -> dict:
     data = load_live_briefing()
     remind = []
@@ -12445,16 +12623,7 @@ def snapshot_payload() -> dict:
     else:
         summary_lines[-1] += " Still Open"
     pending["summary"] = "\n".join(summary_lines)
-    end_ms = 0
-    end_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftEnd") or "").strip())
-    if end_match:
-        end = now.replace(
-            hour=int(end_match.group(1)),
-            minute=int(end_match.group(2)),
-            second=0,
-            microsecond=0,
-        )
-        end_ms = int(end.timestamp() * 1000)
+    end_ms = shift_logout_ms(data, now)
     return {
         "ok": True,
         "generatedAt": data.get("generatedAt"),
@@ -12734,6 +12903,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             pathlib.Path("/tmp/plan-ai.json").unlink()
         except OSError:
             pass
+        link_planner_evidence()
         code, unrecognized, timed_out = run_cli()
         user_abort = PLAN_STOP.is_set() and read_plan_state().get("state") != "running"
         if user_abort and not pathlib.Path("/tmp/plan-ai.json").is_file():
@@ -12768,10 +12938,14 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             code = 0
     ai_path = pathlib.Path("/tmp/plan-ai.json")
     has_ai = ai_path.is_file() and ai_path.stat().st_mtime >= (run_started - 2)
-    if not has_ai and not user_abort:
-        if finish_plan_from_evidence():
-            filled = True
-            append_plan_step(kind="log", label="Filled what the model left, from this run's clips.")
+    if not has_ai and not user_abort and not killed:
+        append_plan_step(kind="log", label="Analysis file missing. Asking the model to write it.")
+        try:
+            run_cli(prompt=missing_plan_prompt(), timeout_sec=4 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="The analysis rewrite could not start: " + clip(str(exc), 160))
+        has_ai = ai_path.is_file() and ai_path.stat().st_mtime >= (run_started - 2)
+        filled = has_ai
     if not user_abort and not killed:
         if prompt_too_long or flags.get("runner_down"):
             PLAN_STOP.clear()
@@ -12795,24 +12969,37 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         fix_rounds += 1
         fails = list(LAST_CHECK_FAILS)
         append_plan_step(kind="log", label="Asking the model to fix the publish check")
-        try:
-            pathlib.Path("/tmp/plan-today.json").unlink()
-        except OSError:
-            pass
-        fix_prompt = (
-            TODAY_PLAN_SYSTEM
-            + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
-            "Write only /tmp/plan-today.json. Do not drop a required row.\n"
-            + "\n".join(fails)
-            + "\n\n"
-            + today_plan_user_prompt()
+        needs_analysis = any(
+            re.search(
+                r"FAIL (peek|ai|sections|json|gather|case-row|sev1|chronology|when|meeting|bunch|closeout|gus):",
+                f,
+            )
+            for f in fails
         )
+        needs_today = any(re.search(r"FAIL today:", f) for f in fails)
         try:
-            run_cli(prompt=fix_prompt, timeout_sec=3 * 60)
+            if needs_analysis or not needs_today:
+                run_cli(prompt=repair_plan_prompt(fails), timeout_sec=4 * 60)
+            if needs_today:
+                try:
+                    pathlib.Path("/tmp/plan-today.json").unlink()
+                except OSError:
+                    pass
+                run_cli(
+                    prompt=(
+                        TODAY_PLAN_SYSTEM
+                        + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
+                        "Write only /tmp/plan-today.json. Do not drop a required row.\n"
+                        + "\n".join(fails)
+                        + "\n\n"
+                        + today_plan_user_prompt()
+                    ),
+                    timeout_sec=3 * 60,
+                )
+                if not merge_today_plan_file():
+                    break
         except OSError as exc:
             append_plan_step(kind="log", label="The fix pass could not start: " + clip(str(exc), 160))
-            break
-        if not merge_today_plan_file():
             break
         published = salvage_publish_plan(run_started)
     if prompt_too_long or flags.get("runner_down"):
@@ -13864,7 +14051,7 @@ def write_native_host_manifests() -> None:
         return
     payload = {
         "name": NATIVE_HOST_NAME,
-        "description": "Start the engineer day planner local bridge",
+        "description": "Start the HeadStart local bridge",
         "path": str(launch),
         "type": "stdio",
         "allowed_origins": [f"chrome-extension://{CHROME_EXTENSION_ID}/"],

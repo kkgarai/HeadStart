@@ -30,6 +30,7 @@ async function saveLedger(ledger) {
   const page = readBriefing();
   const next = {
     keys: edpPruneLedgerKeys((ledger && ledger.keys) || {}, Date.now(), page && page.timezone),
+    undone: (ledger && ledger.undone) || {},
     updatedAt: Date.now()
   };
   await chrome.storage.local.set({ edpDone: next });
@@ -171,11 +172,19 @@ document.addEventListener("click", (ev) => {
     const store = keys.length ? keys.slice() : ["id:" + id];
     const ledger = await loadLedger();
     ledger.keys = ledger.keys || {};
+    ledger.undone = ledger.undone || {};
     const now = Date.now();
-    store.forEach((k) => {
-      if (on) ledger.keys[k] = now;
-      else delete ledger.keys[k];
-    });
+    function writeKey(k, marked) {
+      if (!k) return;
+      if (marked) {
+        ledger.keys[k] = now;
+        delete ledger.undone[k];
+      } else {
+        delete ledger.keys[k];
+        ledger.undone[k] = now;
+      }
+    }
+    store.forEach((k) => writeKey(k, on));
     if (!data) {
       await saveLedger(ledger);
       return;
@@ -186,10 +195,7 @@ document.addEventListener("click", (ev) => {
       const hit = it.id === id || edpItemMatchesLedger(it, keySet);
       if (hit) {
         it.done = on;
-        edpItemKeys(it).forEach((k) => {
-          if (on) ledger.keys[k] = now;
-          else delete ledger.keys[k];
-        });
+        edpItemKeys(it).forEach((k) => writeKey(k, on));
       }
     });
     edpApplyQueueClick(data, id, on);
@@ -209,10 +215,7 @@ document.addEventListener("click", (ev) => {
       if (String(it.id || "").indexOf("plan-follow-") === 0) extra.push(it);
     });
     extra.forEach((it) => {
-      edpItemKeys(it).forEach((k) => {
-        if (it.done === true) ledger.keys[k] = now;
-        else delete ledger.keys[k];
-      });
+      edpItemKeys(it).forEach((k) => writeKey(k, it.done === true));
     });
     await saveLedger(ledger);
     writeBriefing(data);
@@ -244,7 +247,7 @@ try {
 (function tabFlash() {
   if (window.top !== window) return;
   let timer = null;
-  let REAL_TITLE = "Day Planner";
+  let REAL_TITLE = "HeadStart";
   let flashMsg = "Notification";
   function isFlashTitle(t) {
     t = String(t || "").trim();

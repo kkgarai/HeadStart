@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>engineer day planner</title>
+  <title>HeadStart</title>
   <script>
     (function () {
       try {
@@ -1191,7 +1191,7 @@
       overflow-wrap: break-word;
       word-break: normal;
     }
-    .row.slack-row, .row.mail-row { grid-template-columns: minmax(0, 1fr); }
+    .row.slack-row, .row.mail-row, .row.quick-row { grid-template-columns: minmax(0, 1fr); }
     .row.slack-row .label, .row.mail-row .label {
       display: -webkit-box;
       -webkit-line-clamp: 2;
@@ -1970,7 +1970,7 @@
         <div class="who">
           <div class="who-mark" id="who-mark" aria-hidden="true">P</div>
           <div class="who-copy">
-            <h1 id="who">engineer day planner</h1>
+            <h1 id="who">HeadStart</h1>
             <p class="role" id="role"></p>
             <p class="mgr" id="mgr"></p>
           </div>
@@ -2787,7 +2787,7 @@
           + "</div>";
       }
 
-      document.title = (data.daypartLabel || "engineer day planner") + " · " + (data.name || "");
+      document.title = (data.daypartLabel || "HeadStart") + " · " + (data.name || "");
       (function stampDaypart() {
         var raw = String(data.daypart || "").toLowerCase().trim();
         var lab = String(data.daypartLabel || "").toLowerCase();
@@ -2806,7 +2806,7 @@
         whoMark.textContent = "";
         whoMark.hidden = true;
       }
-      document.getElementById("who").textContent = data.name || "engineer day planner";
+      document.getElementById("who").textContent = data.name || "HeadStart";
       var roleEl = document.getElementById("role");
       roleEl.textContent = data.title || "";
       roleEl.hidden = !data.title;
@@ -3028,19 +3028,34 @@
       }
       function slackDoneIdentity(item) {
         if (!item) return "";
+        var raw = normDoneUrl(item.slackUrl || item.slackPermalink || item.permalink || item.threadUrl || "");
+        if (/\/p\d{10,}/.test(raw)) return "slack:" + raw;
         var ch = slackConvId(item);
         var ts = String(item.ts || item.threadTs || item.message_ts || "").trim();
         if (!/^\d{10}\.\d+$/.test(ts)) {
-          var raw = String(item.slackUrl || item.permalink || item.threadUrl || "");
-          var pm = raw.match(/\/p(\d{10})(\d{1,6})/);
+          var pm = String(item.slackUrl || item.permalink || item.threadUrl || "").match(/\/p(\d{10})(\d{1,6})/);
           if (pm) ts = pm[1] + "." + pm[2];
         }
-        if (/^D[A-Z0-9]{8,}$/i.test(ch)) return "slackch:" + ch.toUpperCase();
-        if (/^[CG][A-Z0-9]{8,}$/i.test(ch) && /^\d{10}\.\d+$/.test(ts)) {
+        if (/^[CGD][A-Z0-9]{8,}$/i.test(ch) && /^\d{10}\.\d+$/.test(ts)) {
           return "slackth:" + ch.toUpperCase() + ":" + ts;
         }
         if (item.id) return "id:" + String(item.id);
         return "";
+      }
+      function inboxHideKeys(item) {
+        var keys = itemDoneKeys(item);
+        var ch = slackConvId(item);
+        if (/^D[A-Z0-9]{8,}$/i.test(ch)) {
+          keys.push("slackch:" + ch);
+          keys.push("id:slack-" + ch);
+        }
+        var raw = normDoneUrl((item && (item.slackUrl || item.permalink || item.threadUrl)) || "");
+        if (raw && /slack\.com/i.test(raw)) {
+          keys.push("slack:" + raw);
+          var bare = raw.replace(/\/p\d{10,}.*$/i, "");
+          if (bare && bare !== raw) keys.push("slack:" + bare);
+        }
+        return keys.filter(function (k, i, all) { return k && all.indexOf(k) === i; });
       }
       function itemDoneKeys(item) {
         var keys = [];
@@ -3057,7 +3072,9 @@
         if (cal && /calendar\.google\.com/i.test(cal)) keys.push("calurl:" + cal);
         var start = String(item.startStamp || "").trim();
         var lab = String(item.label || "").trim().toLowerCase().replace(/\s+/g, " ");
-        if (start && lab) keys.push("slot:" + start + ":" + lab);
+        var hasCase = keys.some(function (k) { return k.indexOf("case:") === 0; });
+        var genericSlot = /^(needs us now|follow-?ups?|take new cases|new cases|short break|open)$/.test(lab);
+        if (start && lab && !hasCase && !genericSlot) keys.push("slot:" + start + ":" + lab);
         var slackFields = [item.slackUrl, item.slackPermalink, item.threadUrl, item.permalink];
         if (isSlackRow(item) || String(item.kind || "").toLowerCase() === "slack") {
           var sk = slackDoneIdentity(item);
@@ -3100,11 +3117,17 @@
       function writeDoneLedgerKeys(addKeys, on) {
         var rec = readDoneLedger();
         rec.keys = rec.keys || {};
+        rec.undone = rec.undone || {};
         var now = Date.now();
         (addKeys || []).forEach(function (k) {
           if (!k) return;
-          if (on) rec.keys[k] = now;
-          else delete rec.keys[k];
+          if (on) {
+            rec.keys[k] = now;
+            delete rec.undone[k];
+          } else {
+            delete rec.keys[k];
+            rec.undone[k] = now;
+          }
         });
         rec.keys = pruneDoneKeyMap(rec.keys, now);
         rec.updatedAt = now;
@@ -3197,7 +3220,7 @@
           if (m.match(clickedId)) {
             rows.forEach(function (it) {
               it.done = !!on;
-              writeDoneLedgerKeys(itemDoneKeys(it), !!on);
+              writeDoneLedgerKeys(inboxHideKeys(it), !!on);
               changed = true;
             });
           }
@@ -3218,10 +3241,15 @@
         if (item.autoBreak || item.kind === "break") return false;
         if (isGoogleCalEvent(item)) return item.done === true;
         if (item.done === false) return false;
+        var rec = readDoneLedger();
+        var undone = rec.undone || {};
         var ledger = activeDoneKeySet();
         var keys = itemDoneKeys(item);
         for (var i = 0; i < keys.length; i++) {
-          if (ledger[keys[i]]) return true;
+          if (undone[keys[i]]) return false;
+        }
+        for (var j = 0; j < keys.length; j++) {
+          if (ledger[keys[j]]) return true;
         }
         if (item.done === true) return true;
         if (item.id && doneIds().indexOf(item.id) >= 0) return true;
@@ -3280,8 +3308,10 @@
           }
         });
         var store = [];
+        var slackOrMail = !!(target && (isSlackRow(target) || isMailRow(target) || String(target.kind || "").toLowerCase() === "slack" || /^(mail|email|gmail)$/i.test(String(target.kind || ""))));
         hits.forEach(function (it) {
-          itemDoneKeys(it).forEach(function (k) {
+          var add = (slackOrMail || isSlackRow(it) || isMailRow(it)) ? inboxHideKeys(it) : itemDoneKeys(it);
+          add.forEach(function (k) {
             if (!k) return;
             if (google && k.indexOf("id:") !== 0 && k.indexOf("event:") !== 0) return;
             if (store.indexOf(k) < 0) store.push(k);
@@ -3965,8 +3995,13 @@
         var later = bandOf(sec) === "later";
         var isPlan = bandOf(sec) === "plan";
         var when = itemWhen(item);
-        if (!when) {
-          when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
+        var quick = /quick win/i.test(sectionKey(sec && sec.title));
+        if (!when && !quick) {
+          if (gusSectionTitle(sec && sec.title) || String(item.kind || "").toLowerCase() === "gus" || item.gusBot === true) {
+            when = "GUS";
+          } else {
+            when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
+          }
         }
         var rawLabel = item.gusBot ? plainGus(item.label) : item.label;
         var labelText = prettyName(isPlan ? String(rawLabel || "").replace(/\/case-gho/gi, "GEO handover") : punchline(rawLabel));
@@ -4002,6 +4037,7 @@
         if (item.kind === "note") cls += " compact";
         if (isSlackRow(item, sec)) cls += " slack-row";
         if (isMailRow(item, sec)) cls += " mail-row";
+        if (quick) cls += " quick-row";
         if (canComplete(item, sec) && isDone(item.id)) cls += " done";
         var actions = actionHtml(item, sec);
         var timedAttr = (item.startStamp && item.endStamp)
@@ -4010,7 +4046,7 @@
         var idAttr = item.id ? ' data-id="' + esc(item.id) + '"' : "";
         return (
           '<div class="' + cls + '"' + timedAttr + idAttr + ">" +
-            (compact ? "" : '<div class="when">' + esc(when) + "</div>") +
+            (compact || quick ? "" : '<div class="when">' + esc(when) + "</div>") +
             '<div class="row-body">' +
               '<div class="label"' + (later && item.label ? ' title="' + esc(item.label) + '"' : "") + ">" + lab + "</div>" +
               (meta ? '<div class="case-meta">' + esc(meta) + "</div>" : "") +
@@ -5370,11 +5406,13 @@
         var ledger = activeDoneKeySet();
         var ids = doneIds();
         var changed = false;
+        var blocked = {};
         walkItems(function (it) {
           if (!it || it.autoBreak || it.kind === "break") return;
           if (isGoogleCalEvent(it)) return;
           if (it.done === false) {
-            writeDoneLedgerKeys(itemDoneKeys(it), false);
+            inboxHideKeys(it).forEach(function (k) { blocked[k] = true; });
+            writeDoneLedgerKeys(inboxHideKeys(it), false);
             changed = true;
             return;
           }
@@ -5392,9 +5430,11 @@
             changed = true;
           }
         });
+        var undone = (readDoneLedger().undone) || {};
         if (data.doneLedger && data.doneLedger.keys) {
           Object.keys(data.doneLedger.keys).forEach(function (k) {
             if (!k || k.indexOf("event:") === 0 || k.indexOf("calurl:") === 0 || k.indexOf("id:cal-") === 0) return;
+            if (undone[k] || blocked[k]) return;
             if (isDurableDoneKey(k) && !ledger[k]) writeDoneLedgerKeys([k], true);
           });
         }
