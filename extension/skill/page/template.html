@@ -5127,8 +5127,14 @@
           });
         }
         addParas((raw.peek && raw.peek.summary) || raw.summary);
-        if (!paras.length) addParas(raw.detail);
-        if (!paras.length && inbox) addParas(raw.snippet || raw.openedClip);
+        if (inbox) {
+          paras = [];
+          seenPara = {};
+          var blob = peekClean((raw.peek && raw.peek.summary) || raw.snippet || raw.openedClip || raw.detail || "");
+          if (blob) paras.push(blob);
+        } else {
+          if (!paras.length) addParas(raw.detail);
+        }
         var html = "";
         html += '<p class="peek-h">' + (inbox ? "Message" : "Summary") + "</p>";
         if (paras.length) {
