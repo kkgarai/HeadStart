@@ -1191,7 +1191,7 @@
       overflow-wrap: break-word;
       word-break: normal;
     }
-    .row.slack-row, .row.mail-row { grid-template-columns: minmax(0, 1fr); }
+    .row.slack-row, .row.mail-row, .row.quick-row { grid-template-columns: minmax(0, 1fr); }
     .row.slack-row .label, .row.mail-row .label {
       display: -webkit-box;
       -webkit-line-clamp: 2;
@@ -3967,11 +3967,10 @@
         var later = bandOf(sec) === "later";
         var isPlan = bandOf(sec) === "plan";
         var when = itemWhen(item);
-        if (!when) {
+        var quick = /quick win/i.test(sectionKey(sec && sec.title));
+        if (!when && !quick) {
           if (gusSectionTitle(sec && sec.title) || String(item.kind || "").toLowerCase() === "gus" || item.gusBot === true) {
             when = "GUS";
-          } else if (/quick win/i.test(sectionKey(sec && sec.title))) {
-            when = "Quick";
           } else {
             when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
           }
@@ -4010,6 +4009,7 @@
         if (item.kind === "note") cls += " compact";
         if (isSlackRow(item, sec)) cls += " slack-row";
         if (isMailRow(item, sec)) cls += " mail-row";
+        if (quick) cls += " quick-row";
         if (canComplete(item, sec) && isDone(item.id)) cls += " done";
         var actions = actionHtml(item, sec);
         var timedAttr = (item.startStamp && item.endStamp)
@@ -4018,7 +4018,7 @@
         var idAttr = item.id ? ' data-id="' + esc(item.id) + '"' : "";
         return (
           '<div class="' + cls + '"' + timedAttr + idAttr + ">" +
-            (compact ? "" : '<div class="when">' + esc(when) + "</div>") +
+            (compact || quick ? "" : '<div class="when">' + esc(when) + "</div>") +
             '<div class="row-body">' +
               '<div class="label"' + (later && item.label ? ' title="' + esc(item.label) + '"' : "") + ">" + lab + "</div>" +
               (meta ? '<div class="case-meta">' + esc(meta) + "</div>" : "") +
