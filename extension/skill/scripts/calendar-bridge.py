@@ -2886,14 +2886,30 @@ def save_done_ledger_from_data(data: dict) -> None:
     sanit = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sanit)
     rec = load_done_ledger()
-    keys = rec.get("keys") if isinstance(rec.get("keys"), dict) else {}
+    keys = dict(rec.get("keys") if isinstance(rec.get("keys"), dict) else {})
+    undone = dict(sanit._undone_map(rec))
+    page_led = data.get("doneLedger") if isinstance(data.get("doneLedger"), dict) else {}
+    undone.update(sanit._undone_map(page_led))
     now_ms = int(time.time() * 1000)
-    keys = dict(keys)
-    for k in sanit.collect_done_keys(data):
+    fresh = set()
+    for _sec, it in sanit._walk_items(data):
+        if it.get("done") is True:
+            fresh.update(k for k in sanit.item_done_keys(it) if not sanit._channel_only_done_key(k))
+    for k in fresh:
+        undone.pop(k, None)
         keys[k] = keys.get(k) or now_ms
     for k in sanit.undone_item_keys(data):
         keys.pop(k, None)
+        undone[k] = now_ms
+    for k in sanit.collect_done_keys(data):
+        if k in undone or sanit._channel_only_done_key(k):
+            continue
+        keys[k] = keys.get(k) or now_ms
+    for k in list(keys):
+        if k in undone or sanit._channel_only_done_key(k):
+            keys.pop(k, None)
     rec["keys"] = sanit.drop_google_done_keys(sanit.prune_done_key_map(keys, now_ms))
+    rec["undone"] = sanit.prune_done_key_map(undone, now_ms)
     rec["updatedAt"] = now_ms
     path = done_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)

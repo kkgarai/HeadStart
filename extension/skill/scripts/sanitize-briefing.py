@@ -3324,13 +3324,11 @@ def item_matches_done(it: dict, keys: set[str], undone: set[str] | None = None) 
         return False
     item_keys = _done_keys_for_match(it)
     undone = undone or set()
-    if undone and any(k in undone for k in item_keys):
+    if undone and any(k in undone and not _channel_only_done_key(k) for k in item_keys):
         return False
     if any(k in keys for k in item_keys):
         return True
     if _item_case_nums(it) & _ledger_case_nums(keys):
-        return True
-    if _item_slack_dms(it) & _ledger_slack_dms(keys):
         return True
     if _item_mail_ids(it) & _ledger_mail_ids(keys):
         return True
@@ -3392,7 +3390,7 @@ def collect_done_keys(data: dict) -> set[str]:
             keys.update(durable)
         elif it.get("id"):
             keys.add("id:" + str(it.get("id")))
-    return {k for k in keys if k}
+    return {k for k in keys if k and not _channel_only_done_key(k)}
 
 
 def apply_done_keys(data: dict, keys: set[str], undone: set[str] | None = None) -> None:
@@ -3409,7 +3407,7 @@ def apply_done_keys(data: dict, keys: set[str], undone: set[str] | None = None) 
             it.pop("done", None)
             continue
         item_keys = _done_keys_for_match(it)
-        if undone and any(k in undone for k in item_keys):
+        if undone and any(k in undone and not _channel_only_done_key(k) for k in item_keys):
             it["done"] = False
             continue
         if item_matches_done(it, keys, undone):
@@ -3432,21 +3430,42 @@ def stamp_items_done_from_ledger(items: list, extra: dict | None = None, data: d
             it["done"] = True
 
 
+def _channel_only_done_key(key: str) -> bool:
+    """A whole Slack DM. Done is one message, so this key must not hide the next one."""
+    s = str(key or "")
+    if s.startswith("slackch:"):
+        return True
+    if re.fullmatch(r"id:slack-D[A-Z0-9]{8,}", s, re.I):
+        return True
+    if s.startswith("slack:"):
+        url = s[len("slack:") :]
+        if re.search(r"/archives/D[A-Z0-9]+$", url, re.I) and not re.search(r"/p\d{10,}", url):
+            return True
+    return False
+
+
+def _undone_map(rec: object) -> dict:
+    if not isinstance(rec, dict):
+        return {}
+    blob = rec.get("undone")
+    return dict(blob) if isinstance(blob, dict) else {}
+
+
 def inbox_row_is_done(it: dict, keys: set[str] | None = None) -> bool:
-    """A Slack or Mail row already marked Done. Case Done does not hide a different message."""
-    if not isinstance(it, dict):
+    """A Slack or Mail message already marked Done. Undo, and a later message in that DM, stay open."""
+    if not isinstance(it, dict) or it.get("done") is False:
         return False
     if it.get("done") is True:
         return True
     keys = keys or set()
     if not keys:
         return False
-    if _item_slack_dms(it) & _ledger_slack_dms(keys):
-        return True
     if _item_mail_ids(it) & _ledger_mail_ids(keys):
         return True
     for key in item_done_keys(it):
-        if key.startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-")) and key in keys:
+        if _channel_only_done_key(key):
+            continue
+        if key.startswith(("slack:", "slackth:", "mail:", "mailid:", "id:mail-")) and key in keys:
             return True
     return False
 
@@ -3469,7 +3488,7 @@ def _done_ledger_files() -> list[pathlib.Path]:
 
 
 def disk_done_keys() -> set[str]:
-    """Done marks for this loaded copy. An older snapshot must not bring back an undo."""
+    """Done marks for this loaded copy. An undo, and a whole-DM key, do not count."""
     here = pathlib.Path(__file__).resolve().parent.parent / "out" / ".done-keys.json"
     paths = [here] if here.is_file() else _done_ledger_files()[:1]
     keys: set[str] = set()
@@ -3478,8 +3497,8 @@ def disk_done_keys() -> set[str]:
             rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        keys |= _ledger_keys(rec)
-    return keys
+        keys |= _ledger_keys(rec) - set(_undone_map(rec))
+    return {k for k in keys if not _channel_only_done_key(k)}
 
 
 def omit_done_inbox_rows(data: dict) -> None:
@@ -3545,15 +3564,29 @@ def drop_google_done_keys(keys: dict) -> dict:
 
 
 def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | None = None) -> None:
+    now_ms = int(datetime.now().timestamp() * 1000)
+    undone_at: dict = {}
+    if isinstance(extra, dict):
+        undone_at.update(_undone_map(extra))
+    if isinstance(data.get("doneLedger"), dict):
+        undone_at.update(_undone_map(data.get("doneLedger")))
     undone = set(undone_item_keys(data))
+    fresh: set[str] = set()
+    for _sec, it in _walk_items(data):
+        if it.get("done") is True:
+            fresh.update(k for k in item_done_keys(it) if not _channel_only_done_key(k))
+    for k in fresh:
+        undone_at.pop(k, None)
+    for k in undone:
+        undone_at[k] = now_ms
+    blocked = set(undone_at)
     keys = collect_done_keys(data)
     if isinstance(prev, dict):
         keys |= collect_done_keys(prev)
     keys |= _ledger_keys(extra)
-    keys -= undone
-    apply_done_keys(data, keys, undone)
+    keys -= blocked
+    apply_done_keys(data, keys, blocked)
     sync_queue_plan_blocks(data)
-    now_ms = int(datetime.now().timestamp() * 1000)
     blob = extra.get("keys") if isinstance(extra, dict) and isinstance(extra.get("keys"), dict) else {}
     merged = dict(blob) if isinstance(blob, dict) else {}
     if isinstance(data.get("doneLedger"), dict) and isinstance(data["doneLedger"].get("keys"), dict):
@@ -3562,15 +3595,16 @@ def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | Non
                 merged[k] = at
     for k in keys:
         merged[k] = merged.get(k) or now_ms
-    for k in undone:
-        merged.pop(k, None)
+    for k in list(merged):
+        if k in blocked or _channel_only_done_key(k):
+            merged.pop(k, None)
     merged = drop_google_done_keys(
         prune_done_key_map(merged, now_ms, str(data.get("timezone") or ""))
     )
     for _sec, it in _walk_items(data):
         if _is_google_cal_row(it):
             it.pop("done", None)
-    data["doneLedger"] = {"keys": merged, "updatedAt": now_ms}
+    data["doneLedger"] = {"keys": merged, "undone": undone_at, "updatedAt": now_ms}
     data["doneKeys"] = sorted(k for k in merged if is_durable_done_key(k))
 
 

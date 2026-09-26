@@ -180,22 +180,16 @@ function edpItemKeys(item) {
 function edpItemMatchesLedger(item, keySet) {
   if (!item || !keySet || !keySet.size) return false;
   const keys = edpItemKeys(item);
-  if (keys.some((k) => keySet.has(k))) return true;
+  if (keys.some((k) => keySet.has(k) && k.indexOf("slackch:") !== 0 && !/^id:slack-D[A-Z0-9]{8,}$/i.test(k))) return true;
   const cases = new Set(edpCaseNums(item));
-  const dms = new Set();
   const mails = new Set();
   keys.forEach((k) => {
-    if (k.indexOf("slackch:") === 0) dms.add(k.slice(8));
     if (k.indexOf("mailid:") === 0) mails.add(k.slice(7));
   });
-  if (item.channelId && /^D/i.test(String(item.channelId))) dms.add(String(item.channelId));
   for (const k of keySet) {
     if (k.indexOf("case:") === 0 && cases.has(k.slice(5))) return true;
     const cm = String(k).match(/(?:need|follow|watch|meet|qw|case)-(\d{6,})/i);
     if (cm && cases.has(cm[1])) return true;
-    if (k.indexOf("slackch:") === 0 && dms.has(k.slice(8))) return true;
-    const ch = edpSlackChannel(k);
-    if (ch && ch.charAt(0) === "D" && dms.has(ch)) return true;
     if (k.indexOf("mailid:") === 0 && mails.has(k.slice(7))) return true;
     const mid = edpMailId(k);
     if (mid && mails.has(mid)) return true;
