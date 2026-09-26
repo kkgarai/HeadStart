@@ -5552,8 +5552,8 @@ def _model_peek_summary(it: dict) -> str:
 
 
 def _required_thread_ids(text: str) -> set[str]:
-    """Swarm threads, and channel threads this engineer is in. Not DMs. Not a #sev1- channel."""
-    needed: set[str] = set()
+    """One id per swarm or involved channel. A second message in that channel is not a second card."""
+    newest: dict[str, tuple[float, str]] = {}
     for block in re.split(r"\n(?=## slack )", text or ""):
         ident = re.search(r"## slack (\S+)", block)
         if not ident:
@@ -5562,14 +5562,27 @@ def _required_thread_ids(text: str) -> set[str]:
         match = re.search(r"(?m)^- channel: (.*)$", block)
         if match:
             channel = match.group(1).strip()
+        cid_m = re.search(r"(?m)^- channelId: (\S+)", block)
+        cid = cid_m.group(1) if cid_m else ""
+        if not re.match(r"^[CG][A-Z0-9]{8,}$", cid, re.I):
+            found = re.search(r"\b(C[A-Z0-9]{8,})\b", ident.group(1))
+            cid = found.group(1) if found else ""
         swarm = bool(re.search(r"(?m)^- swarmCase:", block))
         sev1 = bool(re.search(r"(?m)^- sev1Case:", block)) or bool(re.search(r"sev1-\d{5,}", channel, re.I))
         dm = bool(re.search(r"\bDM\b", channel, re.I)) or ident.group(1).startswith("slack-D")
-        if sev1 or dm:
+        if sev1 or dm or not cid:
             continue
-        if swarm or (channel and channel not in ("", "DM")):
-            needed.add(ident.group(1))
-    return needed
+        if not swarm and not channel:
+            continue
+        ts_m = re.search(r"(?m)^- ts: (\d+(?:\.\d+)?)", block)
+        try:
+            ts = float(ts_m.group(1)) if ts_m else 0.0
+        except ValueError:
+            ts = 0.0
+        prev = newest.get(cid.upper())
+        if prev is None or ts >= prev[0]:
+            newest[cid.upper()] = (ts, ident.group(1))
+    return {row[1] for row in newest.values()}
 
 
 def _inbox_row_ids(payload: dict) -> set[str]:
@@ -5589,13 +5602,44 @@ def _inbox_row_ids(payload: dict) -> set[str]:
     return ids
 
 
+def _inbox_channel_ids(payload: dict) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(payload, dict):
+        return ids
+    block = payload.get("slack")
+    if not isinstance(block, dict):
+        return ids
+    for grp in block.get("groups") or []:
+        if not isinstance(grp, dict):
+            continue
+        for it in grp.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            cid = str(it.get("channelId") or "")
+            if not re.match(r"^[CG][A-Z0-9]{8,}$", cid, re.I):
+                found = re.search(r"\b(C[A-Z0-9]{8,})\b", str(it.get("id") or "") + " " + str(it.get("slackUrl") or ""))
+                cid = found.group(1) if found else ""
+            if cid:
+                ids.add(cid.upper())
+    return ids
+
+
 def _inbox_peek_gaps(payload: dict, inbox_text: str) -> list[str]:
     gaps: list[str] = []
     if not isinstance(payload, dict):
         return ["plan-inbox.json is not an object"]
-    missing = sorted(_required_thread_ids(inbox_text) - _inbox_row_ids(payload))
-    if missing:
-        gaps.append("missing thread " + ", ".join(missing[:12]))
+    have_channels = _inbox_channel_ids(payload)
+    missing_channels = []
+    for block in re.split(r"\n(?=## slack )", inbox_text or ""):
+        ident = re.search(r"## slack (\S+)", block)
+        if not ident or ident.group(1) not in _required_thread_ids(inbox_text):
+            continue
+        cid_m = re.search(r"(?m)^- channelId: (\S+)", block)
+        cid = (cid_m.group(1) if cid_m else "").upper()
+        if cid and cid not in have_channels and ident.group(1) not in _inbox_row_ids(payload):
+            missing_channels.append(ident.group(1))
+    if missing_channels:
+        gaps.append("missing thread " + ", ".join(missing_channels[:12]))
     for key in ("slack", "mail"):
         block = payload.get(key)
         if not isinstance(block, dict):

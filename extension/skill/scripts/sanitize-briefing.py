@@ -227,6 +227,7 @@ def _slack_ts(item: dict) -> str:
 
 
 def _slack_channel_key(item: dict) -> str:
+    """One list row per DM person or per channel. A second message in that channel is the same row."""
     cid = str(item.get("channelId") or item.get("slackChannel") or item.get("channel") or "").strip()
     if not re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
         url = str(item.get("slackUrl") or item.get("permalink") or "")
@@ -236,13 +237,22 @@ def _slack_channel_key(item: dict) -> str:
         else:
             ident = str(item.get("id") or "")
             m = re.search(r"([CGD][A-Z0-9]{8,})", ident)
-            cid = m.group(1) if m else ident
-    if re.match(r"^D[A-Z0-9]{8,}$", cid, re.I):
-        return cid
-    ts = _slack_ts(item)
-    if cid and ts:
-        return f"{cid}:{ts}"
-    return cid or str(item.get("id") or "")
+            cid = m.group(1) if m else ""
+    if re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
+        return cid.upper()
+    label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip().lower()
+    label = re.sub(r"\s*\(dm\)\s*$", "", label, flags=re.I).strip()
+    if label:
+        return "person:" + label
+    return str(item.get("id") or "")
+
+
+def _slack_row_time(item: dict) -> float:
+    raw = str(item.get("threadTs") or item.get("ts") or "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
 
 
 def _is_slack_row(item: dict) -> bool:
@@ -389,14 +399,10 @@ def normalize_inbox_buckets(data: dict) -> None:
             continue
         unread: list[dict] = []
         opened: list[dict] = []
-        seen: set[str] = set()
+        seen: dict[str, dict] = {}
 
         def take(it: dict, group_kind: str) -> None:
             ident = _slack_channel_key(it) if is_slack else str(it.get("id") or it.get("mailUrl") or "")
-            if ident and ident in seen:
-                return
-            if ident:
-                seen.add(ident)
             kind = group_kind or (
                 slack_item_kind(it) if is_slack else mail_item_kind(it)
             )
@@ -406,7 +412,22 @@ def normalize_inbox_buckets(data: dict) -> None:
                 it["slackBucket"] = "unread" if kind == "unread" else "reply"
             else:
                 it["mailBucket"] = "unread" if kind == "unread" else "reply"
-            (unread if kind == "unread" else opened).append(it)
+            bucket = unread if kind == "unread" else opened
+            if ident and ident in seen:
+                if not is_slack:
+                    return
+                prev = seen[ident]
+                if _slack_row_time(it) <= _slack_row_time(prev):
+                    return
+                for pile in (unread, opened):
+                    if prev in pile:
+                        pile.remove(prev)
+                bucket.append(it)
+                seen[ident] = it
+                return
+            if ident:
+                seen[ident] = it
+            bucket.append(it)
 
         for grp in sec.get("groups") or []:
             if not isinstance(grp, dict):
