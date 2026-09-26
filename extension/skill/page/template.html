@@ -5378,10 +5378,12 @@
         var ledger = activeDoneKeySet();
         var ids = doneIds();
         var changed = false;
+        var blocked = {};
         walkItems(function (it) {
           if (!it || it.autoBreak || it.kind === "break") return;
           if (isGoogleCalEvent(it)) return;
           if (it.done === false) {
+            itemDoneKeys(it).forEach(function (k) { blocked[k] = true; });
             writeDoneLedgerKeys(itemDoneKeys(it), false);
             changed = true;
             return;
@@ -5403,7 +5405,7 @@
         if (data.doneLedger && data.doneLedger.keys) {
           Object.keys(data.doneLedger.keys).forEach(function (k) {
             if (!k || k.indexOf("event:") === 0 || k.indexOf("calurl:") === 0 || k.indexOf("id:cal-") === 0) return;
-            if (isDurableDoneKey(k) && !ledger[k]) writeDoneLedgerKeys([k], true);
+            if (isDurableDoneKey(k) && !ledger[k] && !blocked[k]) writeDoneLedgerKeys([k], true);
           });
         }
         forgetGoogleDoneKeys();

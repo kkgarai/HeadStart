@@ -3469,9 +3469,11 @@ def _done_ledger_files() -> list[pathlib.Path]:
 
 
 def disk_done_keys() -> set[str]:
-    """Done marks from this snapshot and earlier ones. A new run must omit those Slack and Mail rows."""
+    """Done marks for this loaded copy. An older snapshot must not bring back an undo."""
+    here = pathlib.Path(__file__).resolve().parent.parent / "out" / ".done-keys.json"
+    paths = [here] if here.is_file() else _done_ledger_files()[:1]
     keys: set[str] = set()
-    for path in _done_ledger_files():
+    for path in paths:
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -3543,11 +3545,7 @@ def drop_google_done_keys(keys: dict) -> dict:
 
 
 def apply_persisted_done(data: dict, prev: dict | None = None, extra: dict | None = None) -> None:
-    undone = {
-        key
-        for key in undone_item_keys(data)
-        if not str(key).startswith(("slack:", "slackch:", "slackth:", "mail:", "mailid:", "id:slack-", "id:mail-"))
-    }
+    undone = set(undone_item_keys(data))
     keys = collect_done_keys(data)
     if isinstance(prev, dict):
         keys |= collect_done_keys(prev)
