@@ -5461,13 +5461,164 @@ def _inbox_clip_index(data: dict) -> dict[str, str]:
     return found
 
 
+def _unwrap_clip(text: str) -> str:
+    raw = str(text or "").strip()
+    if raw.startswith("{") and '"messages"' in raw[:120]:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("messages"), str):
+            return obj["messages"]
+    return raw.replace("\\n", "\n").replace("\\t", " ")
+
+
+def _slack_peek_messages(text: str) -> list[dict]:
+    body = _unwrap_clip(text)
+    found: list[dict] = []
+    pattern = re.compile(
+        r"===\s*Message from\s+(.+?)\s+\([A-Z0-9]+\)\s+at\s+(.+?)\s*===\s*"
+        r"(?:\nMessage TS:[^\n]*)?\n(.*?)(?=\n===\s*Message from|\Z)",
+        re.S,
+    )
+    for match in pattern.finditer(body):
+        who = re.sub(r"\s+", " ", match.group(1)).strip()
+        when = re.sub(r"\s+", " ", match.group(2)).strip()
+        msg = re.sub(r"\s+", " ", match.group(3)).strip()
+        msg = re.sub(r"\s*Reactions:.*$", "", msg).strip()
+        if not msg or who.lower() == "slackbot":
+            continue
+        found.append({"who": who, "when": when, "kind": "slack", "text": msg[:500]})
+        if len(found) >= 8:
+            break
+    return found
+
+
+def _mail_peek_body(text: str) -> str:
+    raw = _unwrap_clip(text)
+    parts = re.split(r"---\s*BODY\s*---", raw, maxsplit=1, flags=re.I)
+    body = parts[1] if len(parts) > 1 else raw
+    body = re.split(r"---\s*You'?re receiving emails", body, maxsplit=1, flags=re.I)[0]
+    body = re.sub(r"https://\S{80,}", lambda m: m.group(0)[:72] + "…", body)
+    body = re.sub(r"[ \t]+", " ", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body[:1600]
+
+
+def _sev1_slack_ids(data: dict) -> set[str]:
+    ids: set[str] = set()
+    for row in data.get("slackCandidates") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("sev1Channel") or row.get("sev1Case"):
+            ident = str(row.get("id") or "").strip()
+            if ident:
+                ids.add(ident)
+    return ids
+
+
+def _is_sev1_slack_row(it: dict, sev1_ids: set[str]) -> bool:
+    ident = str(it.get("id") or "").strip()
+    if ident and ident in sev1_ids:
+        return True
+    if it.get("sev1Channel") or it.get("sev1Case"):
+        return True
+    blob = " ".join(str(it.get(k) or "") for k in ("label", "channel", "detail"))
+    return bool(re.search(r"#sev1-|sev1-\d{5,}", blob, re.I))
+
+
+def _peek_is_raw(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    if raw.startswith("{") or '"messages"' in raw[:80]:
+        return True
+    if "Message TS:" in raw or "=== Message from" in raw or raw.startswith("Message ID:"):
+        return True
+    return False
+
+
+def _model_peek_summary(it: dict) -> str:
+    peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
+    summary = str(peek.get("summary") or it.get("summary") or "").strip()
+    if _peek_is_raw(summary):
+        summary = ""
+    detail = str(it.get("detail") or "").strip()
+    if summary:
+        return summary[:900]
+    if detail and not _peek_is_raw(detail) and detail.lower() not in ("swarm thread", "sev-1 channel"):
+        return detail[:900]
+    return ""
+
+
+def _required_thread_ids(text: str) -> set[str]:
+    """Swarm threads, and channel threads this engineer is in. Not DMs. Not a #sev1- channel."""
+    needed: set[str] = set()
+    for block in re.split(r"\n(?=## slack )", text or ""):
+        ident = re.search(r"## slack (\S+)", block)
+        if not ident:
+            continue
+        channel = ""
+        match = re.search(r"(?m)^- channel: (.*)$", block)
+        if match:
+            channel = match.group(1).strip()
+        swarm = bool(re.search(r"(?m)^- swarmCase:", block))
+        sev1 = bool(re.search(r"(?m)^- sev1Case:", block)) or bool(re.search(r"sev1-\d{5,}", channel, re.I))
+        dm = bool(re.search(r"\bDM\b", channel, re.I)) or ident.group(1).startswith("slack-D")
+        if sev1 or dm:
+            continue
+        if swarm or (channel and channel not in ("", "DM")):
+            needed.add(ident.group(1))
+    return needed
+
+
+def _inbox_row_ids(payload: dict) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(payload, dict):
+        return ids
+    for key in ("slack", "mail"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        for grp in block.get("groups") or []:
+            if not isinstance(grp, dict):
+                continue
+            for it in grp.get("items") or []:
+                if isinstance(it, dict) and it.get("id"):
+                    ids.add(str(it["id"]))
+    return ids
+
+
+def _inbox_peek_gaps(payload: dict, inbox_text: str) -> list[str]:
+    gaps: list[str] = []
+    if not isinstance(payload, dict):
+        return ["plan-inbox.json is not an object"]
+    missing = sorted(_required_thread_ids(inbox_text) - _inbox_row_ids(payload))
+    if missing:
+        gaps.append("missing thread " + ", ".join(missing[:12]))
+    for key in ("slack", "mail"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        for grp in block.get("groups") or []:
+            if not isinstance(grp, dict):
+                continue
+            for it in grp.get("items") or []:
+                if not isinstance(it, dict):
+                    continue
+                if key == "slack" and _is_sev1_slack_row(it, set()):
+                    gaps.append("sev1 channel " + str(it.get("id") or it.get("label") or ""))
+                    continue
+                if not _model_peek_summary(it):
+                    gaps.append("no peek summary " + str(it.get("id") or it.get("label") or ""))
+    return gaps[:16]
+
+
 def _stamp_inbox_peeks(data: dict) -> None:
-    """Keep the opened Slack or Mail text on the row so Peek can show it."""
+    """Keep a readable Slack or Mail message on the row. Sev-1 channels stay off the Slack card."""
     if not isinstance(data, dict):
         return
-    clips = _inbox_clip_index(data)
-    if not clips:
-        return
+    sev1_ids = _sev1_slack_ids(data)
     for sec in data.get("sections") or []:
         if not isinstance(sec, dict):
             continue
@@ -5476,6 +5627,22 @@ def _stamp_inbox_peeks(data: dict) -> None:
         is_mail = bool(re.match(r"(mail|email|gmail)\b", title, re.I))
         if not is_slack and not is_mail:
             continue
+        if is_slack:
+            kept_groups = []
+            for grp in sec.get("groups") or []:
+                if not isinstance(grp, dict):
+                    continue
+                grp["items"] = [
+                    it for it in (grp.get("items") or [])
+                    if isinstance(it, dict) and not _is_sev1_slack_row(it, sev1_ids)
+                ]
+                if grp["items"]:
+                    kept_groups.append(grp)
+            sec["groups"] = kept_groups
+            sec["items"] = [
+                it for it in (sec.get("items") or [])
+                if isinstance(it, dict) and not _is_sev1_slack_row(it, sev1_ids)
+            ]
         rows: list[dict] = []
         for it in sec.get("items") or []:
             if isinstance(it, dict):
@@ -5484,17 +5651,24 @@ def _stamp_inbox_peeks(data: dict) -> None:
             if isinstance(grp, dict):
                 rows.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
         for it in rows:
-            ident = str(it.get("id") or "").strip()
-            body = clips.get(ident) or ""
-            if not body:
-                continue
-            it["peek"] = {"summary": body[:1600]}
-            if is_slack and not str(it.get("detail") or "").strip():
-                it["detail"] = _inbox_plain(body, 160)
+            summary = _model_peek_summary(it)
+            if summary:
+                it["peek"] = {"summary": summary}
+            elif isinstance(it.get("peek"), dict) and _peek_is_raw(str(it["peek"].get("summary") or "")):
+                it.pop("peek", None)
+            detail = str(it.get("detail") or "").strip()
+            if _peek_is_raw(detail):
+                detail = ""
+                it["detail"] = ""
+            if is_slack and not detail and summary:
+                sentence = re.split(r"(?<=\.)\s", summary)[0].strip()
+                it["detail"] = sentence[:160]
             if is_slack and not it.get("kind"):
                 it["kind"] = "slack"
             if is_mail and not it.get("kind"):
                 it["kind"] = "mail"
+        if is_slack and not rows and not sec.get("groups") and not sec.get("items"):
+            sec["empty"] = sec.get("empty") or "Slack — clear"
 
 
 def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
@@ -6108,15 +6282,17 @@ Cover every ## slack and ## mail block before you Write. If a read fails or a sl
 
 Slack:
 - Drop done:true.
-- A leftover is something you still owe.
+- A leftover DM is something you still owe.
 - Drop public #help / #support / #ask shouts with no @ you.
-- Keep a public thread only when you were @-mentioned and a reply is still owed.
+- Keep every `- swarmCase:` clip. The case Swarm record linked that thread. Later replies often never @ you and never repeat the case number. Do not drop it for that. Label is "#{case} — #{channel}".
+- Keep a channel thread when you were @mentioned or you wrote in it. That is already how the clip was chosen. Do not drop it only because you spoke last.
+- Do not put a `#sev1-` channel on the Slack card. A `- sev1Case:` clip is for the case, not a Slack row.
 - Keep GUS Bot Work Notifier posts. Do not drop them because they are a bot. Those posts are investigation updates. LAP updates are not in this bot. Investigation SLA is not in this bot.
 - Keep PSBot only in the group conversation it opens with you and your current manager. In that conversation: "has an SLO due" is a warning, "Out of SLO" is already late, and "long running category" names the Support Contact. Drop PSBot posts in any other channel.
 - Keep a Slackbot file titled "ALERT! 15 Minute SLA Warning" and a DM that says a named case will breach or must meet SLA.
 - Drop "SLA REMINDER - Schedule started" rota pings.
-- Drop when lastHumanIsMe is true, or the last human line is you.
-- Closing reactions (ack, white_check_mark, eyes as acknowledgment) can drop even when lastHumanIsMe is false.
+- For a DM only: drop when lastHumanIsMe is true, or the last human line is you.
+- Closing reactions (ack, white_check_mark, eyes as acknowledgment) can drop a DM even when lastHumanIsMe is false.
 - Drop FYI, huddle over, and thanks that say they will update the customer.
 - Not opened = unread and still yours. Needs a reply = opened and you still owe a reply.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
@@ -6137,6 +6313,7 @@ Group titles are only "Not opened" or "Needs a reply".
 Each group is {"title": "...", "items": [...]}. The array key is items.
 Each kept row copies id, label, slackUrl or mailUrl, channelId, ts, from, unread from the clip.
 slackBucket is "unread" or "reply". mailBucket is "unread" or "reply".
+You write the Peek. Each kept row has detail (one sentence) and peek {"summary": "2-4 sentences"}. Say what the thread or mail is about and what is still open. Plain sentences. Do not paste the clip, JSON, "Message TS", user ids, or mail headers.
 Omit every dropped row. Empty groups are allowed only when every clip was a drop.
 Then stop.
 """.strip()
@@ -6184,6 +6361,20 @@ def merge_classified_inbox() -> bool:
     return True
 
 
+def _inbox_repair_prompt(gaps: list[str]) -> str:
+    lines = "\n".join("- " + g for g in gaps[:12])
+    return (
+        "The Slack and Mail file is not ready. Fix only these. "
+        "Read the planner-inbox parts again if a thread is missing. "
+        "Keep every swarm thread and every channel thread this engineer is in. "
+        "Do not add a #sev1- channel. "
+        "Each kept row needs a peek summary you write: 2-4 plain sentences. "
+        "Do not paste the clip, JSON, Message TS, or mail headers. "
+        "Write the complete /tmp/plan-inbox.json again. Then stop.\n"
+        + lines
+    )
+
+
 def classify_inbox(run_cli) -> bool:
     """Mandatory Slack and Gmail analysis. The page shows only the kept rows."""
     global PLAN_SYSTEM_OVERRIDE
@@ -6202,11 +6393,33 @@ def classify_inbox(run_cli) -> bool:
     finally:
         PLAN_SYSTEM_OVERRIDE = None
     ready = False
+    loaded: dict = {}
     try:
         loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
         ready = isinstance(loaded, dict) and loaded.get("inboxReviewed") is True
     except (OSError, json.JSONDecodeError):
         ready = False
+    gaps: list[str] = []
+    if ready:
+        try:
+            inbox_text = PLANNER_INBOX_TXT.read_text(encoding="utf-8")
+        except OSError:
+            inbox_text = ""
+        gaps = _inbox_peek_gaps(loaded, inbox_text)
+    if ready and gaps:
+        append_plan_step(kind="log", label="Slack and Mail peek incomplete. Asking the model again.")
+        PLAN_SYSTEM_OVERRIDE = system
+        try:
+            run_cli(prompt=_inbox_repair_prompt(gaps), timeout_sec=3 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="Slack and Mail peek retry could not start: " + clip(str(exc), 160))
+        finally:
+            PLAN_SYSTEM_OVERRIDE = None
+        try:
+            loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
+            ready = isinstance(loaded, dict) and loaded.get("inboxReviewed") is True
+        except (OSError, json.JSONDecodeError):
+            ready = False
     if ready:
         append_plan_step(kind="log", label="Slack and Gmail filtered")
         return True

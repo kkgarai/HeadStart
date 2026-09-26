@@ -5117,6 +5117,30 @@
         else if (raw.caseUrl || raw.caseNumber || k === "case" || caseToken(raw)) kicker = "Case";
         document.getElementById("peek-kicker").textContent = kicker;
         document.getElementById("peek-title").textContent = raw.label || "Peek";
+        if (inbox && raw.peek && Array.isArray(raw.peek.chronology) && raw.peek.chronology.length) {
+          var thread = '<p class="peek-h">Message</p><ol class="peek-chrono">';
+          raw.peek.chronology.forEach(function (ev) {
+            var who = (ev && ev.who) || "";
+            var at = (ev && ev.when) || "";
+            var text = peekClean((ev && ev.text) || "");
+            thread += "<li>";
+            thread += '<div class="peek-meta">';
+            if (who) thread += "<span>" + esc(who) + "</span>";
+            if (at) thread += "<span>" + esc(at) + "</span>";
+            thread += "</div>";
+            if (text) thread += "<p>" + esc(text) + "</p>";
+            thread += "</li>";
+          });
+          thread += "</ol>";
+          document.getElementById("peek-body").innerHTML = thread;
+          el.hidden = false;
+          el.classList.add("is-open");
+          el.setAttribute("aria-hidden", "false");
+          document.body.style.overflow = "hidden";
+          var threadClose = el.querySelector(".js-peek-close");
+          if (threadClose) threadClose.focus();
+          return;
+        }
         var paras = [];
         var seenPara = {};
         function addParas(text) {
