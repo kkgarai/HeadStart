@@ -4,6 +4,8 @@ const SERVICE = "engineer-day-planner";
 const PORT_START = 8765;
 const PORT_END = 8799;
 const LEAD_MS = 10 * 60 * 1000;
+const LOGOUT_LEAD_MS = 30 * 60 * 1000;
+const LOGOUT_GRACE_MS = 12 * 60 * 60 * 1000;
 const SNOOZE_MIN = 5;
 const ALARM_SYNC = "edp-sync";
 const ALARM_OMNI = "edp-omni";
@@ -557,19 +559,33 @@ async function flagPlannerTabs(msg) {
   await flashPlannerTabs(true, msg);
 }
 
+function noteIcon() {
+  return chrome.runtime.getURL("extension/icons/icon128.png");
+}
+
+function createNote(id, options) {
+  return new Promise((resolve) => {
+    chrome.notifications.create(id, options, (created) => {
+      const err = chrome.runtime.lastError;
+      resolve(!err && !!created);
+    });
+  });
+}
+
 function plannerNote(noteId) {
   return noteId === OMNI_NOTE || (noteId && (noteId.indexOf("edp-note-") === 0 || noteId.indexOf("edp-logout-pending-") === 0));
 }
 
 async function fireLogoutPending(end) {
   const key = String(end || "");
-  const stored = await chrome.storage.local.get(["snapshot", "edpLogoutNoted"]);
-  if (key && stored.edpLogoutNoted === key) return;
-  await chrome.storage.local.set({ edpLogoutNoted: key || String(Date.now()) });
+  const now = Date.now();
+  if (end && now >= end + LOGOUT_GRACE_MS) return;
+  const stored = await chrome.storage.local.get(["snapshot", "edpLogoutShown"]);
+  if (key && stored.edpLogoutShown === key) return;
   const pending = (stored.snapshot && stored.snapshot.pending) || {};
-  chrome.notifications.create("edp-logout-pending-" + (key || Date.now()), {
+  const created = await createNote("edp-logout-pending-" + (key || Date.now()), {
     type: "basic",
-    iconUrl: "icons/icon128.png",
+    iconUrl: noteIcon(),
     title: "30 Minutes Before Logout",
     message: pendingLine(pending),
     silent: true,
@@ -577,20 +593,24 @@ async function fireLogoutPending(end) {
     buttons: [{ title: "OK" }],
     priority: 2
   });
+  if (!created) return;
+  await chrome.storage.local.set({ edpLogoutShown: key || String(now) });
   await flagPlannerTabs("30 Minutes Before Logout");
   await startLogoutSound();
 }
 
 async function scheduleLogoutPending(snap) {
-  await chrome.alarms.clear("edp-logout-pending");
   const end = Number(snap && snap.shiftEndMs) || 0;
   if (!end) return;
-  const when = end - 30 * 60 * 1000;
+  const when = end - LOGOUT_LEAD_MS;
   const now = Date.now();
-  const stored = await chrome.storage.local.get(["edpLogoutNoted"]);
-  if (stored.edpLogoutNoted === String(end)) return;
-  if (now >= end) return;
+  const stored = await chrome.storage.local.get(["edpLogoutShown"]);
+  if (stored.edpLogoutShown === String(end) || now >= end + LOGOUT_GRACE_MS) {
+    await chrome.alarms.clear("edp-logout-pending");
+    return;
+  }
   if (when <= now) {
+    await chrome.alarms.clear("edp-logout-pending");
     await fireLogoutPending(end);
     return;
   }
@@ -692,7 +712,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const mins = start ? Math.max(0, Math.round((start - Date.now()) / 60000)) : 10;
   chrome.notifications.create("edp-note-" + id, {
     type: "basic",
-    iconUrl: "icons/icon128.png",
+    iconUrl: noteIcon(),
     title: label,
     message: mins <= 0 ? "Starting now" : "Starts in " + mins + " min",
     requireInteraction: true,
@@ -1007,7 +1027,7 @@ async function showOmniAlert(body) {
   }
   chrome.notifications.create(OMNI_NOTE, {
     type: "basic",
-    iconUrl: "icons/icon128.png",
+    iconUrl: noteIcon(),
     title,
     message,
     requireInteraction: true,

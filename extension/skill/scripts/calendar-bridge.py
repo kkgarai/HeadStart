@@ -12497,6 +12497,34 @@ def _is_custom_plan_block(item: dict) -> bool:
     return False
 
 
+def shift_logout_ms(data: dict, now: datetime | None = None) -> int:
+    """Logout for this shift, in epoch ms. An end at or before login is the next morning."""
+    if now is None or now.tzinfo is None:
+        now, _ = shift_now(data)
+    end_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftEnd") or "").strip())
+    if not end_match:
+        return 0
+    end = now.replace(
+        hour=int(end_match.group(1)),
+        minute=int(end_match.group(2)),
+        second=0,
+        microsecond=0,
+    )
+    start_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftStart") or "").strip())
+    if start_match:
+        start = now.replace(
+            hour=int(start_match.group(1)),
+            minute=int(start_match.group(2)),
+            second=0,
+            microsecond=0,
+        )
+        if end <= start:
+            end = end + timedelta(days=1)
+        if now < start and end - timedelta(days=1) > now:
+            end = end - timedelta(days=1)
+    return int(end.timestamp() * 1000)
+
+
 def snapshot_payload() -> dict:
     data = load_live_briefing()
     remind = []
@@ -12579,16 +12607,7 @@ def snapshot_payload() -> dict:
     else:
         summary_lines[-1] += " Still Open"
     pending["summary"] = "\n".join(summary_lines)
-    end_ms = 0
-    end_match = re.match(r"^(\d{1,2}):(\d{2})$", str(data.get("shiftEnd") or "").strip())
-    if end_match:
-        end = now.replace(
-            hour=int(end_match.group(1)),
-            minute=int(end_match.group(2)),
-            second=0,
-            microsecond=0,
-        )
-        end_ms = int(end.timestamp() * 1000)
+    end_ms = shift_logout_ms(data, now)
     return {
         "ok": True,
         "generatedAt": data.get("generatedAt"),
