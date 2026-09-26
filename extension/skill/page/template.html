@@ -3970,6 +3970,8 @@
         if (!when) {
           if (gusSectionTitle(sec && sec.title) || String(item.kind || "").toLowerCase() === "gus" || item.gusBot === true) {
             when = "GUS";
+          } else if (/quick win/i.test(sectionKey(sec && sec.title))) {
+            when = "Quick";
           } else {
             when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
           }
