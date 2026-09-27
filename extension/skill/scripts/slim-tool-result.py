@@ -316,7 +316,14 @@ def pack_slack_text(text: str) -> dict:
             from_name = re.split(r"[<(]", frm.group(1), maxsplit=1)[0].strip()
         rows.append(
             {
-                "channel": clip(ch.group(1).split("(ID:")[0].strip(), 80) if ch else None,
+                "channel": clip(
+                    re.sub(
+                        r"(?i)ZC:[CGD][A-Z0-9]{8,}:",
+                        "",
+                        ch.group(1).split("(ID:")[0],
+                    ).strip().lstrip("#"),
+                    80,
+                ) if ch else None,
                 "channelId": cid.group(1) if cid else None,
                 "from": clip(from_name, 60) or None,
                 "ts": ts.group(1) if ts else None,

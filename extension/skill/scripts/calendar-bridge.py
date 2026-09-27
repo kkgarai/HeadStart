@@ -3973,7 +3973,7 @@ def _parse_slack_search(
                 continue
         elif not cid.startswith("D"):
             continue
-        channel = (ch_m.group(1).split("(ID")[0].strip() if ch_m else "").strip()
+        channel = _sanitize_mod().slack_channel_title(ch_m.group(1) if ch_m else "")
         raw_text = re.sub(r"\s+", " ", (body_m.group(1) if body_m else "")).strip()
         file_m = re.search(r"Files:\s*(.+)", chunk)
         if file_m:
@@ -3982,7 +3982,9 @@ def _parse_slack_search(
         if cid.startswith("D") or re.search(r"\bDM\b", channel, re.I):
             label = "DM"
         else:
-            label = f"{who or 'Slack'} — {channel}" if channel else (who or "Slack")
+            shown = f"#{channel}" if channel else ""
+            label = f"{who or 'Slack'} — {shown}" if shown else (who or "Slack")
+            channel = shown or channel
         if text_clip:
             label = f"{label} — {text_clip}"
         if not url and cid:
@@ -4220,7 +4222,7 @@ def _search_sev1_channel(case_number: str, account: str = "", subject: str = "")
             ):
                 hits.append(
                     {
-                        "channel": match.group(1).strip().lstrip("#"),
+                        "channel": _sanitize_mod().slack_channel_title(match.group(1)),
                         "channelId": match.group(2),
                         "snippet": "",
                     }
@@ -4356,6 +4358,7 @@ def attach_swarm_threads(found: list, seen: dict) -> int:
         if not num or num in seen_case:
             continue
         channel_id, channel, ts, url = _swarm_thread_parts(rec)
+        channel = _sanitize_mod().slack_channel_title(channel)
         if channel_id[:1] not in "CG" or not ts:
             continue
         key = f"swarm:{num}:{channel_id}:{ts}"

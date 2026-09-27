@@ -226,6 +226,46 @@ def _slack_ts(item: dict) -> str:
     return ""
 
 
+def slack_channel_title(raw: object) -> str:
+    """Human channel name. Slack sometimes prefixes ZC:<channel id>:."""
+    text = re.sub(r"\s*\(ID:.*$", "", str(raw or "")).strip()
+    text = re.sub(r"(?i)ZC:[CGD][A-Z0-9]{8,}:", "", text).strip()
+    return text.lstrip("#").strip()
+
+
+def strip_zc_channel_token(text: object) -> str:
+    raw = str(text or "")
+    if "zc:" not in raw.lower():
+        return raw
+    return re.sub(r"(?i)ZC:[CGD][A-Z0-9]{8,}:", "", raw)
+
+
+def clean_slack_names(data: dict) -> None:
+    """Drop the ZC: channel-id prefix from Slack card titles."""
+    if not isinstance(data, dict):
+        return
+
+    def one(it: dict) -> None:
+        if str(it.get("kind") or "").lower() != "slack" and not _is_slack_row(it):
+            return
+        for key in ("label", "detail", "channel", "snippet"):
+            if it.get(key):
+                it[key] = strip_zc_channel_token(it[key])
+        peek = it.get("peek")
+        if isinstance(peek, dict):
+            for key in ("summary", "detail", "snippet"):
+                if peek.get(key):
+                    peek[key] = strip_zc_channel_token(peek[key])
+        elif isinstance(peek, str) and peek:
+            it["peek"] = strip_zc_channel_token(peek)
+
+    for _sec, it in _walk_items(data):
+        one(it)
+    for row in data.get("slackCandidates") or []:
+        if isinstance(row, dict):
+            one(row)
+
+
 def _slack_channel_key(item: dict) -> str:
     """One list row per DM person or per channel. A second message in that channel is the same row."""
     cid = str(item.get("channelId") or item.get("slackChannel") or item.get("channel") or "").strip()
@@ -5444,6 +5484,7 @@ def sanitize(data: dict) -> dict:
     refuse_false_gus_clear(data)
     normalize_inbox_buckets(data)
     relabel_slack_dms(data)
+    clean_slack_names(data)
     drop_invented_meetings(data)
     organize_plan(data)
     split_bunched_cases(data)
