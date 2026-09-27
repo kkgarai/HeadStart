@@ -5628,18 +5628,6 @@ def _inbox_peek_gaps(payload: dict, inbox_text: str) -> list[str]:
     gaps: list[str] = []
     if not isinstance(payload, dict):
         return ["plan-inbox.json is not an object"]
-    have_channels = _inbox_channel_ids(payload)
-    missing_channels = []
-    for block in re.split(r"\n(?=## slack )", inbox_text or ""):
-        ident = re.search(r"## slack (\S+)", block)
-        if not ident or ident.group(1) not in _required_thread_ids(inbox_text):
-            continue
-        cid_m = re.search(r"(?m)^- channelId: (\S+)", block)
-        cid = (cid_m.group(1) if cid_m else "").upper()
-        if cid and cid not in have_channels and ident.group(1) not in _inbox_row_ids(payload):
-            missing_channels.append(ident.group(1))
-    if missing_channels:
-        gaps.append("missing thread " + ", ".join(missing_channels[:12]))
     for key in ("slack", "mail"):
         block = payload.get(key)
         if not isinstance(block, dict):
@@ -6326,27 +6314,27 @@ Cover every ## slack and ## mail block before you Write. If a read fails or a sl
 
 Slack:
 - Drop done:true.
-- A leftover DM is something you still owe.
+- Same rule for a DM, a swarm thread, and any other thread. If you replied last and that reply closed the loop, it is done. Do not list it. If you replied last and the loop is still open, list it. If someone else spoke last and a reply is still owed, list it.
+- A closed loop is a thank-you, an ack, a done, a "I'll update the customer", or any last line that settles the thread. An open loop is a question you asked, a next step you still owe, or a reply you are still waiting on.
 - Drop public #help / #support / #ask shouts with no @ you.
-- Keep every `- swarmCase:` clip. The case Swarm record linked that thread. Later replies often never @ you and never repeat the case number. Do not drop it for that. Label is "#{case} — #{channel}".
-- Keep a channel thread when you were @mentioned or you wrote in it. That is already how the clip was chosen. Do not drop it only because you spoke last.
+- A `- swarmCase:` clip is the thread from the case Swarm record. Read it. Keep it only when the loop is still open. Label is "#{case} — #{channel}".
+- A channel thread is here only because you were @mentioned or you wrote in it. Keep it only when the loop is still open. Do not keep it only because you are in the channel.
 - Do not put a `#sev1-` channel on the Slack card. A `- sev1Case:` clip is for the case, not a Slack row.
 - Keep GUS Bot Work Notifier posts. Do not drop them because they are a bot. Those posts are investigation updates. LAP updates are not in this bot. Investigation SLA is not in this bot.
 - Keep PSBot only in the group conversation it opens with you and your current manager. In that conversation: "has an SLO due" is a warning, "Out of SLO" is already late, and "long running category" names the Support Contact. Drop PSBot posts in any other channel.
 - Keep a Slackbot file titled "ALERT! 15 Minute SLA Warning" and a DM that says a named case will breach or must meet SLA.
 - Drop "SLA REMINDER - Schedule started" rota pings.
-- For a DM only: drop when lastHumanIsMe is true, or the last human line is you.
-- Closing reactions (ack, white_check_mark, eyes as acknowledgment) can drop a DM even when lastHumanIsMe is false.
+- Closing reactions (ack, white_check_mark, eyes as acknowledgment) close the loop. Drop that DM or thread.
 - Drop FYI, huddle over, and thanks that say they will update the customer.
-- Not opened = unread and still yours. Needs a reply = opened and you still owe a reply.
+- Not opened = unread and still yours. Needs a reply = opened and the loop is still open.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
-- DM label is "{peer} (DM)".
+- DM label is "{peer} (DM)". One card per person. One card per channel. One card per thread.
 
 Mail:
 - Drop done:true.
 - Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail. Sandbox success is an operation-completed notice with no LAP case number. LAP-BlackTab-Bot mention mail is not in this file.
 - Drop meeting mail that only schedules, reschedules, cancels, or records accepted, declined, tentative, or maybe. Those already show on the calendar.
-- Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, that still needs a look.
+- Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, when a look or a reply is still owed. If you already replied and that reply closed the loop, drop it.
 - Keep a case SLA mail from no.reply@salesforce.com whose subject is "Case <number> will breach SLA in 30 minutes" or "Action Required | SLA Missed". The body names the case, the Response Target, and the ask (accept and a public comment, or close the loop).
 - Keep email about an investigation you support or follow. That is an investigation update, with GUS Bot. Investigation SLA is the PSBot group conversation, not mail.
 - Drop "SLA ROTA" roster mail. That is not a case or an investigation.
@@ -6409,8 +6397,8 @@ def _inbox_repair_prompt(gaps: list[str]) -> str:
     lines = "\n".join("- " + g for g in gaps[:12])
     return (
         "The Slack and Mail file is not ready. Fix only these. "
-        "Read the planner-inbox parts again if a thread is missing. "
-        "Keep every swarm thread and every channel thread this engineer is in. "
+        "A thread or DM stays off the list when this engineer's last reply closed the loop. "
+        "List it when that last reply left the loop open. "
         "Do not add a #sev1- channel. "
         "Each kept row needs a peek summary you write: 2-4 plain sentences. "
         "Do not paste the clip, JSON, Message TS, or mail headers. "
