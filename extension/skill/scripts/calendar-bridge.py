@@ -4388,23 +4388,50 @@ def attach_swarm_threads(found: list, seen: dict) -> int:
     return added
 
 
-def inbox_lookback_days(tzname: str = "") -> int:
-    """Monday catches Friday through the weekend. Later in the week, two days is enough."""
+def _shift_tz(tzname: str):
     name = str(tzname or "").strip()
     try:
-        tz = ZoneInfo(name) if name else timezone.utc
+        return ZoneInfo(name) if name else timezone.utc
     except Exception:
-        tz = timezone.utc
+        return timezone.utc
+
+
+def inbox_lookback_days(tzname: str = "") -> int:
+    """Monday looks back four days. Every other day looks back two. Today is not one of those days."""
+    tz = _shift_tz(tzname)
     if datetime.now(tz).weekday() == 0:
         return 4
     return 2
 
 
+def inbox_cutoff(tzname: str = "") -> datetime:
+    """Start of today, minus the lookback as hours. Sunday’s 48 hours begins at Friday 00:00."""
+    tz = _shift_tz(tzname)
+    now = datetime.now(tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start - timedelta(hours=inbox_lookback_days(tzname) * 24)
+
+
+def inbox_search_after(tzname: str = "") -> str:
+    """Slack after: drops that calendar date. Search one day before the hour cutoff, then drop older hits."""
+    cutoff = inbox_cutoff(tzname)
+    return (cutoff.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def inbox_newer_than_hours(tzname: str = "") -> int:
+    """Whole hours from now back to the cutoff, so the oldest hour is included."""
+    cutoff = inbox_cutoff(tzname)
+    now = datetime.now(cutoff.tzinfo or timezone.utc)
+    span = max(0.0, (now - cutoff).total_seconds())
+    return max(1, int((span + 3599) // 3600))
+
+
 def fill_slack_leftovers(data: dict) -> None:
     append_plan_step(kind="log", label="Opening leftover Slack DMs and mention threads")
     apply_identity_cache(data)
-    lookback = inbox_lookback_days(str(data.get("timezone") or ""))
-    after = (datetime.now(timezone.utc) - timedelta(days=lookback)).strftime("%Y-%m-%d")
+    tzname = str(data.get("timezone") or "")
+    after = inbox_search_after(tzname)
+    cutoff_epoch = inbox_cutoff(tzname).timestamp()
     me = str(data.get("slackUserId") or "U03PRB7ADAL").strip() or "U03PRB7ADAL"
     unread_queries = (
         _slack_search_args(f"is:dm after:{after}", unread=True),
@@ -4478,6 +4505,13 @@ def fill_slack_leftovers(data: dict) -> None:
                 channel0 = str(item.get("channel") or "")
                 if cid0.startswith("D") or re.search(r"\bDM\b", channel0, re.I):
                     continue
+            raw_ts = str(item.get("ts") or "")
+            if raw_ts:
+                try:
+                    if float(raw_ts) < cutoff_epoch:
+                        continue
+                except ValueError:
+                    pass
             if not item.get("gusBot"):
                 sanit.stamp_slack_dm_label(item, data)
             cid = str(item.get("channelId") or "")
@@ -4797,8 +4831,8 @@ def fill_mail_leftovers(data: dict) -> None:
     searched = False
     last_err = ""
     for _ in range(6):
-        lookback = inbox_lookback_days(str(data.get("timezone") or ""))
-        args = {"query": f"is:unread in:inbox newer_than:{lookback}d", "page_size": 50}
+        hours = inbox_newer_than_hours(str(data.get("timezone") or ""))
+        args = {"query": f"is:unread in:inbox newer_than:{hours}h", "page_size": 50}
         if token:
             args["page_token"] = token
         try:
@@ -11585,7 +11619,7 @@ def gus_soql(soql: str) -> list:
     raise last or RuntimeError("gus query failed")
 
 
-def _modified_within_days(raw: str, days: int) -> bool:
+def _modified_since(raw: str, cutoff: datetime) -> bool:
     text = str(raw or "").strip()
     if not text:
         return False
@@ -11595,7 +11629,7 @@ def _modified_within_days(raw: str, days: int) -> bool:
         return False
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return when >= datetime.now(timezone.utc) - timedelta(days=days)
+    return when >= cutoff
 
 
 def _gus_role_has(role: str, token: str) -> bool:
@@ -12016,8 +12050,8 @@ def fill_gus_work(seeded: dict, rows: list) -> None:
                     continue
                 if not (_gus_role_has(role, "support-contact") or _gus_role_has(role, "follow")):
                     continue
-                lookback = inbox_lookback_days(str(seeded.get("timezone") or ""))
-                if not _modified_within_days(str(item.get("modified") or ""), lookback):
+                cutoff = inbox_cutoff(str(seeded.get("timezone") or ""))
+                if not _modified_since(str(item.get("modified") or ""), cutoff):
                     continue
                 if inv_n >= 6:
                     break
