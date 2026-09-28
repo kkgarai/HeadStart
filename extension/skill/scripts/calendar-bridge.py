@@ -1541,7 +1541,10 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
 
 def _gus_auth_log_ok() -> bool:
     text = _auth_log_text(".dx-gus-auth.log")
-    return "OAuth authentication completed (provider=gus" in text
+    return (
+        "OAuth authentication completed (provider=gus" in text
+        or "Authentication successful" in text
+    )
 
 
 def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
@@ -1610,7 +1613,7 @@ def begin_google_sign_in() -> dict:
 
 def begin_gus_sign_in() -> dict:
     """Use the AI Suite or Salesforce CLI GUS session. Otherwise open one page."""
-    if aisuite_gus_connected(aisuite_manager_servers()) or sf_gus_connected():
+    if aisuite_gus_connected(aisuite_manager_servers()) or sf_gus_connected() or gus_dx_connected():
         return {
             "ok": True,
             "already": True,
