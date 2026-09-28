@@ -577,7 +577,34 @@ function createNote(id, options) {
 }
 
 function plannerNote(noteId) {
-  return noteId === OMNI_NOTE || (noteId && (noteId.indexOf("edp-note-") === 0 || noteId.indexOf("edp-logout-pending-") === 0));
+  return !!(
+    noteId &&
+    (noteId === OMNI_NOTE ||
+      noteId.indexOf("edp-note-") === 0 ||
+      noteId.indexOf("edp-logout-pending-") === 0)
+  );
+}
+
+function isOmniNote(noteId) {
+  return noteId === OMNI_NOTE || (noteId && noteId.indexOf("edp-note-omni") === 0);
+}
+
+function isLogoutNote(noteId) {
+  return !!(noteId && (noteId.indexOf("edp-note-logout") === 0 || noteId.indexOf("edp-logout-pending-") === 0));
+}
+
+async function showPlannerNote(id, title, message, buttons) {
+  const created = await createNote("edp-note-" + id, {
+    type: "basic",
+    iconUrl: noteIcon(),
+    title: title || "HeadStart",
+    message: message || "",
+    requireInteraction: true,
+    buttons: buttons && buttons.length ? buttons : [{ title: "Turn Off" }],
+    priority: 2
+  });
+  if (created) await flagPlannerTabs(title);
+  return created;
 }
 
 async function fireLogoutPending(end) {
@@ -587,20 +614,14 @@ async function fireLogoutPending(end) {
   const stored = await chrome.storage.local.get(["snapshot", "edpLogoutShown"]);
   if (key && stored.edpLogoutShown === key) return;
   const pending = (stored.snapshot && stored.snapshot.pending) || {};
-  const created = await createNote("edp-logout-pending-" + (key || Date.now()), {
-    type: "basic",
-    iconUrl: noteIcon(),
-    title: "30 Minutes Before Logout",
-    message: pendingLine(pending),
-    silent: true,
-    requireInteraction: true,
-    buttons: [{ title: "OK" }],
-    priority: 2
-  });
+  const created = await showPlannerNote(
+    "logout-" + (key || now),
+    "30 Minutes Before Logout",
+    pendingLine(pending),
+    [{ title: "OK" }]
+  );
   if (!created) return;
   await chrome.storage.local.set({ edpLogoutShown: key || String(now) });
-  await flagPlannerTabs("30 Minutes Before Logout");
-  await startLogoutSound();
 }
 
 async function scheduleLogoutPending(snap) {
@@ -714,27 +735,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const label = (item && item.label) || "Upcoming event";
   const start = item && item.startMs ? Number(item.startMs) : 0;
   const mins = start ? Math.max(0, Math.round((start - Date.now()) / 60000)) : 10;
-  chrome.notifications.create("edp-note-" + id, {
-    type: "basic",
-    iconUrl: noteIcon(),
-    title: label,
-    message: mins <= 0 ? "Starting now" : "Starts in " + mins + " min",
-    requireInteraction: true,
-    buttons: [{ title: "Snooze 5 Min" }, { title: "Turn Off" }],
-    priority: 2
-  });
-  await flagPlannerTabs(label);
+  await showPlannerNote(id, label, mins <= 0 ? "Starting now" : "Starts in " + mins + " min", [
+    { title: "Snooze 5 Min" },
+    { title: "Turn Off" }
+  ]);
 });
 
 chrome.notifications.onButtonClicked.addListener(async (noteId, button) => {
   rememberBlink(false);
-  if (noteId && noteId.indexOf("edp-logout-pending-") === 0) await stopLogoutSound();
+  if (isLogoutNote(noteId)) await stopLogoutSound();
   await stopTabBlink();
-  if (noteId === OMNI_NOTE) {
+  if (isOmniNote(noteId)) {
     await omniAck();
+    chrome.notifications.clear(noteId);
     return;
   }
-  if (noteId && noteId.indexOf("edp-logout-pending-") === 0) {
+  if (isLogoutNote(noteId)) {
     chrome.notifications.clear(noteId);
     return;
   }
@@ -751,15 +767,18 @@ chrome.notifications.onButtonClicked.addListener(async (noteId, button) => {
 
 chrome.notifications.onClicked.addListener(async (noteId) => {
   rememberBlink(false);
-  if (noteId && noteId.indexOf("edp-logout-pending-") === 0) await stopLogoutSound();
+  if (isLogoutNote(noteId)) await stopLogoutSound();
   await stopTabBlink();
-  if (noteId === OMNI_NOTE) await omniAck();
+  if (isOmniNote(noteId)) {
+    await omniAck();
+    chrome.notifications.clear(noteId);
+  }
 });
 
 chrome.notifications.onClosed.addListener((noteId) => {
   if (!plannerNote(noteId)) return;
   rememberBlink(false);
-  if (noteId && noteId.indexOf("edp-logout-pending-") === 0) stopLogoutSound();
+  if (isLogoutNote(noteId)) stopLogoutSound();
   stopTabBlink();
 });
 
@@ -1026,16 +1045,8 @@ async function showOmniAlert(body) {
   }).catch(() => {});
   await playOmniSound();
   await startOmniNagAlarm();
-  chrome.notifications.create(OMNI_NOTE, {
-    type: "basic",
-    iconUrl: noteIcon(),
-    title,
-    message,
-    requireInteraction: true,
-    buttons: [{ title: OMNI_ACK_LABEL }],
-    priority: 2
-  });
-  await flagPlannerTabs(title);
+  const slot = Math.floor(Date.now() / (10 * 60 * 1000));
+  await showPlannerNote("omni-" + slot, title, message, [{ title: OMNI_ACK_LABEL }]);
 }
 
 async function checkOmni() {
