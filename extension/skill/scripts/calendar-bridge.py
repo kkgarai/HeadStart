@@ -1540,11 +1540,21 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
 
 
 def _gus_auth_log_ok() -> bool:
-    text = _auth_log_text(".dx-gus-auth.log")
-    return (
-        "OAuth authentication completed (provider=gus" in text
-        or "Authentication successful" in text
-    )
+    paths = [SKILL_ROOT / "out" / ".dx-gus-auth.log"]
+    runs = HOME / "Library" / "Application Support" / "engineer-day-planner" / "runs"
+    if runs.is_dir():
+        paths.extend(runs.glob("*/skill/out/.dx-gus-auth.log"))
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if (
+            "OAuth authentication completed (provider=gus" in text
+            or "Authentication successful" in text
+        ):
+            return True
+    return False
 
 
 def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
