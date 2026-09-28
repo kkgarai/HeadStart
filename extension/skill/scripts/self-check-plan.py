@@ -102,6 +102,11 @@ def _copied_candidates(page_rows: list, candidates: list) -> bool:
     return len(page) == len(cand) and set(page) == set(cand)
 
 
+def assembled_has_casework(schedule: str) -> bool:
+    """Take New Cases belongs in Casework. Chat, Lunch, and Break do not get that row."""
+    return "casework" in str(schedule or "").lower()
+
+
 def _plan_role(row: dict) -> str:
     rid = str(row.get("id") or "").lower()
     kind = str(row.get("kind") or "").lower()
@@ -216,11 +221,20 @@ def _check_model_rules(data: dict, gather: dict, fails: list[str]) -> None:
         return
     roles = [_plan_role(r) for r in rows]
     workish = [role for role in roles if role in ("new", "work")]
-    if not eod and "new" not in roles:
+    casework = assembled_has_casework(schedule)
+    if not eod and not casework and "new" in roles:
+        fails.append("FAIL today: Take New Cases only belongs in a Casework block.")
+    elif not eod and casework and "new" not in roles:
         fails.append(
-            "FAIL today: include Take new cases (plan-new-cases) in the earliest open hole"
+            "FAIL today: include Take new cases (plan-new-cases) in the Casework block"
         )
-    elif not eod and workish and workish[0] != "new":
+    elif (
+        not eod
+        and casework
+        and "chat" not in schedule
+        and workish
+        and workish[0] != "new"
+    ):
         fails.append("FAIL today: Take new cases must be the first work block")
     if not eod and free >= 180 and "break" not in roles:
         fails.append("FAIL today: include a 10–15 minute short break (plan-break-1)")

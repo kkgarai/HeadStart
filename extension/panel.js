@@ -1251,8 +1251,18 @@ if (helpBtn) helpBtn.addEventListener("click", () => {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (!msg || !msg.type) return;
-  if (msg.type !== "edpOpened") return;
-  resumePlanIfRunning();
+  if (msg.type === "edpOpened") {
+    resumePlanIfRunning();
+    return;
+  }
+  if (msg.type !== "omniAlert" && msg.type !== "omniClear") return;
+  const frame = document.getElementById("frame");
+  if (!frame || !frame.contentWindow) return;
+  frame.contentWindow.postMessage({
+    source: "engineer-day-planner",
+    type: msg.type === "omniAlert" ? "omni-alert" : "omni-clear",
+    detail: msg
+  }, "*");
 });
 
 chrome.storage.onChanged.addListener((changes, area) => {

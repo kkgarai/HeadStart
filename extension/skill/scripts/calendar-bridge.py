@@ -1420,7 +1420,7 @@ def dx_google_connected() -> bool:
     Do not run `mcp-adaptor auth` here. That command starts a browser login,
     including when the flag is `--validate`.
     """
-    return bool(_GOOGLE_DX_OK or _dx_session_ready())
+    return bool(_GOOGLE_DX_OK or _dx_session_ready() or _google_auth_log_ok())
 
 
 def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
@@ -1529,14 +1529,53 @@ def _auth_shows_browser(log_name: str, proc: subprocess.Popen, wait: float = 4.0
     return ""
 
 
+def _auth_log_ok(log_name: str, provider: str) -> bool:
+    """A finished adaptor login stays connected after the bridge restarts."""
+    paths = [SKILL_ROOT / "out" / log_name]
+    runs = HOME / "Library" / "Application Support" / "engineer-day-planner" / "runs"
+    if runs.is_dir():
+        paths.extend(runs.glob("*/skill/out/" + log_name))
+    marker = "OAuth authentication completed (provider=" + provider
+    for path in paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if marker in text or "Authentication successful" in text:
+            return True
+    return False
+
+
+def _google_auth_log_ok() -> bool:
+    return _auth_log_ok(".dx-google-auth.log", "google-workspace-rw")
+
+
 def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
     global _GOOGLE_DX_OK
     try:
         code = proc.wait(timeout=900)
     except Exception:
-        return
-    if code == 0:
+        code = 1
+    if code == 0 or _google_auth_log_ok():
         _GOOGLE_DX_OK = True
+
+
+def _gus_auth_log_ok() -> bool:
+    return _auth_log_ok(".dx-gus-auth.log", "gus")
+
+
+def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
+    global _GUS_DX_OK
+    try:
+        code = proc.wait(timeout=900)
+    except Exception:
+        code = 1
+    if code == 0 or _gus_auth_log_ok():
+        _GUS_DX_OK = True
+
+
+def gus_dx_connected() -> bool:
+    return bool(_GUS_DX_OK or _gus_auth_log_ok())
 
 
 def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -> dict:
@@ -1559,6 +1598,8 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
     if shown or proc.poll() is None:
         if provider == "google-workspace-rw" and proc.poll() is None:
             threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
+        if provider == "gus":
+            threading.Thread(target=_mark_gus_auth_ok, args=(proc,), daemon=True).start()
         return {
             "ok": True,
             "started": True,
@@ -1572,12 +1613,12 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
 
 def begin_google_sign_in() -> dict:
     """Use the AI Suite Google session when it is already there. Otherwise open one page."""
-    if aisuite_server_connected(aisuite_manager_servers(), "google-workspace"):
+    if aisuite_server_connected(aisuite_manager_servers(), "google-workspace") or dx_google_connected():
         return {
             "ok": True,
             "already": True,
             "started": False,
-            "message": "Google is already connected in AI Suite.",
+            "message": "Google is already connected.",
         }
     return begin_provider_sign_in(
         "google-workspace-rw",
@@ -1589,7 +1630,7 @@ def begin_google_sign_in() -> dict:
 
 def begin_gus_sign_in() -> dict:
     """Use the AI Suite or Salesforce CLI GUS session. Otherwise open one page."""
-    if aisuite_gus_connected(aisuite_manager_servers()) or sf_gus_connected():
+    if aisuite_gus_connected(aisuite_manager_servers()) or sf_gus_connected() or gus_dx_connected():
         return {
             "ok": True,
             "already": True,
@@ -1607,7 +1648,7 @@ def start_dx_google_auth(*, user_clicked: bool = False) -> None:
     """
     if not user_clicked:
         return
-    if _GOOGLE_DX_OK or _dx_session_ready():
+    if dx_google_connected():
         return
     begin_google_sign_in()
 
@@ -1649,6 +1690,7 @@ _DX_SERVER_SKIP: set[str] = set()
 _GOOGLE_FALLBACK_FAILED = False
 _GOOGLE_HTTP_DEAD = False
 _GOOGLE_DX_OK = False
+_GUS_DX_OK = False
 _GOOGLE_HTTP_LOCK = threading.Lock()
 _GOOGLE_HTTP_BOX: dict[str, str] = {"url": "", "session": "", "ready": ""}
 _DX_BUF = bytearray()
@@ -1932,7 +1974,12 @@ def discover_mcp_servers(runner: str = "") -> dict[str, dict]:
     for root in mcp_plugin_roots_for(runner):
         if not root.is_dir():
             continue
-        for path in root.glob("**/.mcp.json"):
+        try:
+            mcp_files = list(root.glob("**/.mcp.json"))
+        except OSError as exc:
+            _mcp_status_log("mcp scan: " + str(exc))
+            continue
+        for path in mcp_files:
             if (path.parent / ".orphaned_at").exists():
                 continue
             try:
@@ -2011,8 +2058,11 @@ def ping_stdio_mcp(cfg: dict) -> str:
     command = str(cfg.get("command") or "").strip()
     if not command:
         return "disconnected"
-    if os.path.isfile(command) or shutil.which(command):
-        return "connected"
+    try:
+        if os.path.isfile(command) or shutil.which(command):
+            return "connected"
+    except OSError:
+        return "disconnected"
     return "disconnected"
 
 
@@ -2108,6 +2158,7 @@ def _gus_session_connected(suite: dict) -> bool:
     checks = (
         ("sf", sf_gus_connected),
         ("aisuite", lambda: aisuite_gus_connected(suite)),
+        ("dx", gus_dx_connected),
     )
     for label, fn in checks:
         try:
@@ -2148,7 +2199,11 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
         row = by_id[key]
         if row["status"] == "connected":
             continue
-        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        try:
+            candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        except OSError as exc:
+            _mcp_status_log(key + " mcp: " + str(exc))
+            continue
         for cfg in candidates:
             if looks_oauth(cfg) and not _mcp_cfg_bearer(cfg):
                 # OrgCS queries run in the fetch sidecar with the user's Claude
@@ -2157,9 +2212,17 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
                     _mcp_mark(by_id, key)
                     break
                 continue
-            url = str(cfg.get("url") or "").strip()
+            try:
+                url = str(cfg.get("url") or "").strip()
+            except Exception:
+                continue
             if not url:
-                if ping_stdio_mcp(cfg) == "connected":
+                try:
+                    up = ping_stdio_mcp(cfg) == "connected"
+                except OSError as exc:
+                    _mcp_status_log(key + " stdio: " + str(exc))
+                    continue
+                if up:
                     _mcp_mark(by_id, key)
                     break
                 continue
@@ -2213,6 +2276,41 @@ def _mcp_status_notes(by_id: dict, suite: dict) -> None:
         google["note"] = google_note
 
 
+def _schedule_mcp_bridge_restart(exc: BaseException) -> None:
+    """Replace this process once. A fresh bridge rechecks MCP logins. A plan in progress stays up."""
+    if PLAN_ACTIVE.is_set():
+        _mcp_status_log("mcp restart skipped, plan is running")
+        return
+    stamp = SKILL_ROOT / "out" / ".mcp-restart-at"
+    now = time.time()
+    try:
+        prev = float((stamp.read_text(encoding="utf-8") or "0").strip() or "0")
+    except (OSError, ValueError):
+        prev = 0.0
+    if now - prev < 180:
+        _mcp_status_log("mcp restart already tried")
+        return
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(now), encoding="utf-8")
+    except OSError:
+        return
+    _mcp_status_log("mcp check failed, restarting bridge: " + str(exc))
+
+    def go() -> None:
+        time.sleep(0.6)
+        try:
+            shutdown_our_listeners()
+        except Exception as err:
+            _mcp_status_log("mcp restart shutdown: " + str(err))
+        try:
+            start_detached()
+        except Exception as err:
+            _mcp_status_log("mcp restart start: " + str(err))
+
+    threading.Thread(target=go, daemon=True).start()
+
+
 def planner_mcp_status(runner: str = "") -> list[dict]:
     del runner
     rows = [
@@ -2230,6 +2328,7 @@ def planner_mcp_status(runner: str = "") -> list[dict]:
         _apply_configured_mcp_pings(by_id)
     except Exception as exc:
         _mcp_status_log("mcp ping: " + str(exc))
+        _schedule_mcp_bridge_restart(exc)
     orgcs = by_id.get("orgcs")
     if orgcs and orgcs.get("status") != "connected":
         try:
@@ -3732,7 +3831,7 @@ _SLACK_BOT_HIT = re.compile(
     re.I,
 )
 _SLACK_CURSOR_RE = re.compile(
-    r"(?:for the next page of results use cursor|next_cursor)\s*[`'\"]?\s*[:=]?\s*[`'\"]?([A-Za-z0-9=+\-/_]+)",
+    r"(?:for the next page of results use cursor|next_cursor|use cursor)\s*[`'\"]?\s*[:=]?\s*[`'\"]?([A-Za-z0-9=+\-/_]+)",
     re.I,
 )
 _CLIP_SPEAKER_RE = re.compile(
@@ -3973,7 +4072,7 @@ def _parse_slack_search(
                 continue
         elif not cid.startswith("D"):
             continue
-        channel = (ch_m.group(1).split("(ID")[0].strip() if ch_m else "").strip()
+        channel = _sanitize_mod().slack_channel_title(ch_m.group(1) if ch_m else "")
         raw_text = re.sub(r"\s+", " ", (body_m.group(1) if body_m else "")).strip()
         file_m = re.search(r"Files:\s*(.+)", chunk)
         if file_m:
@@ -3982,7 +4081,9 @@ def _parse_slack_search(
         if cid.startswith("D") or re.search(r"\bDM\b", channel, re.I):
             label = "DM"
         else:
-            label = f"{who or 'Slack'} — {channel}" if channel else (who or "Slack")
+            shown = f"#{channel}" if channel else ""
+            label = f"{who or 'Slack'} — {shown}" if shown else (who or "Slack")
+            channel = shown or channel
         if text_clip:
             label = f"{label} — {text_clip}"
         if not url and cid:
@@ -4220,7 +4321,7 @@ def _search_sev1_channel(case_number: str, account: str = "", subject: str = "")
             ):
                 hits.append(
                     {
-                        "channel": match.group(1).strip().lstrip("#"),
+                        "channel": _sanitize_mod().slack_channel_title(match.group(1)),
                         "channelId": match.group(2),
                         "snippet": "",
                     }
@@ -4356,6 +4457,7 @@ def attach_swarm_threads(found: list, seen: dict) -> int:
         if not num or num in seen_case:
             continue
         channel_id, channel, ts, url = _swarm_thread_parts(rec)
+        channel = _sanitize_mod().slack_channel_title(channel)
         if channel_id[:1] not in "CG" or not ts:
             continue
         key = f"swarm:{num}:{channel_id}:{ts}"
@@ -4388,23 +4490,50 @@ def attach_swarm_threads(found: list, seen: dict) -> int:
     return added
 
 
-def inbox_lookback_days(tzname: str = "") -> int:
-    """Monday catches Friday through the weekend. Later in the week, two days is enough."""
+def _shift_tz(tzname: str):
     name = str(tzname or "").strip()
     try:
-        tz = ZoneInfo(name) if name else timezone.utc
+        return ZoneInfo(name) if name else timezone.utc
     except Exception:
-        tz = timezone.utc
+        return timezone.utc
+
+
+def inbox_lookback_days(tzname: str = "") -> int:
+    """Monday looks back four days. Every other day looks back two. Today is not one of those days."""
+    tz = _shift_tz(tzname)
     if datetime.now(tz).weekday() == 0:
         return 4
     return 2
 
 
+def inbox_cutoff(tzname: str = "") -> datetime:
+    """Start of today, minus the lookback as hours. Sunday’s 48 hours begins at Friday 00:00."""
+    tz = _shift_tz(tzname)
+    now = datetime.now(tz)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start - timedelta(hours=inbox_lookback_days(tzname) * 24)
+
+
+def inbox_search_after(tzname: str = "") -> str:
+    """Slack after: drops that calendar date. Search one day before the hour cutoff, then drop older hits."""
+    cutoff = inbox_cutoff(tzname)
+    return (cutoff.date() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def inbox_newer_than_hours(tzname: str = "") -> int:
+    """Whole hours from now back to the cutoff, so the oldest hour is included."""
+    cutoff = inbox_cutoff(tzname)
+    now = datetime.now(cutoff.tzinfo or timezone.utc)
+    span = max(0.0, (now - cutoff).total_seconds())
+    return max(1, int((span + 3599) // 3600))
+
+
 def fill_slack_leftovers(data: dict) -> None:
     append_plan_step(kind="log", label="Opening leftover Slack DMs and mention threads")
     apply_identity_cache(data)
-    lookback = inbox_lookback_days(str(data.get("timezone") or ""))
-    after = (datetime.now(timezone.utc) - timedelta(days=lookback)).strftime("%Y-%m-%d")
+    tzname = str(data.get("timezone") or "")
+    after = inbox_search_after(tzname)
+    cutoff_epoch = inbox_cutoff(tzname).timestamp()
     me = str(data.get("slackUserId") or "U03PRB7ADAL").strip() or "U03PRB7ADAL"
     unread_queries = (
         _slack_search_args(f"is:dm after:{after}", unread=True),
@@ -4478,6 +4607,13 @@ def fill_slack_leftovers(data: dict) -> None:
                 channel0 = str(item.get("channel") or "")
                 if cid0.startswith("D") or re.search(r"\bDM\b", channel0, re.I):
                     continue
+            raw_ts = str(item.get("ts") or "")
+            if raw_ts:
+                try:
+                    if float(raw_ts) < cutoff_epoch:
+                        continue
+                except ValueError:
+                    pass
             if not item.get("gusBot"):
                 sanit.stamp_slack_dm_label(item, data)
             cid = str(item.get("channelId") or "")
@@ -4643,7 +4779,9 @@ def write_planner_inbox_txt(slack: list, mail: list) -> None:
     slack_rows = [
         row
         for row in (slack or [])
-        if not _sanitize_mod().is_gus_notice(row) and _inbox_still_open(row, done_keys)
+        if not _sanitize_mod().is_gus_notice(row)
+        and _inbox_still_open(row, done_keys)
+        and str(row.get("openedClip") or "").strip()
     ]
     mail_rows = [
         row
@@ -4747,13 +4885,14 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
         item, tool, args = job
         clip_parts: list[str] = []
         cursor = ""
-        for _ in range(3):
+        for _ in range(6):
             payload = dict(args)
             if cursor:
                 payload["cursor"] = cursor
             try:
-                text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=25)
-            except Exception:
+                text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=45)
+            except Exception as exc:
+                item["_openError"] = clip(str(exc), 160)
                 break
             raw = str(text or "").strip()
             if raw:
@@ -4786,6 +4925,13 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for n in pool.map(one, jobs):
             opened += n
+    missed = [job for job in jobs if not job[0].get("openedClip")]
+    for job in missed:
+        opened += one(job)
+    still = [job[0] for job in jobs if not job[0].get("openedClip")]
+    if still:
+        names = ", ".join(str(item.get("channel") or item.get("id") or "") for item in still[:8])
+        append_plan_step(kind="log", label=f"Slack thread open failed · {len(still)} · {names}")
     return opened
 
 
@@ -4797,8 +4943,8 @@ def fill_mail_leftovers(data: dict) -> None:
     searched = False
     last_err = ""
     for _ in range(6):
-        lookback = inbox_lookback_days(str(data.get("timezone") or ""))
-        args = {"query": f"is:unread in:inbox newer_than:{lookback}d", "page_size": 50}
+        hours = inbox_newer_than_hours(str(data.get("timezone") or ""))
+        args = {"query": f"is:unread in:inbox newer_than:{hours}h", "page_size": 50}
         if token:
             args["page_token"] = token
         try:
@@ -5431,6 +5577,295 @@ def forget_prior_fetches(data: dict) -> None:
         data.pop(key, None)
 
 
+def _clips_from_inbox_text(text: str) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for block in re.split(r"\n(?=## (?:slack|mail) )", text or ""):
+        ident = re.search(r"## (?:slack|mail) (\S+)", block)
+        clip = re.search(r"(?m)^- clip: (.*)$", block)
+        if not ident or not clip:
+            continue
+        body = clip.group(1).strip()
+        if body and body not in ("(not opened)", "(no body)"):
+            found[ident.group(1)] = body
+    return found
+
+
+def _inbox_clip_index(data: dict) -> dict[str, str]:
+    found: dict[str, str] = {}
+    for key in ("slackCandidates", "mailCandidates"):
+        for row in data.get(key) or []:
+            if not isinstance(row, dict):
+                continue
+            ident = str(row.get("id") or "").strip()
+            body = str(row.get("openedClip") or row.get("snippet") or "").strip()
+            if ident and body:
+                found[ident] = body
+    try:
+        found.update(_clips_from_inbox_text(PLANNER_INBOX_TXT.read_text(encoding="utf-8")))
+    except OSError:
+        pass
+    return found
+
+
+def _unwrap_clip(text: str) -> str:
+    raw = str(text or "").strip()
+    if raw.startswith("{") and '"messages"' in raw[:120]:
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            obj = None
+        if isinstance(obj, dict) and isinstance(obj.get("messages"), str):
+            return obj["messages"]
+    return raw.replace("\\n", "\n").replace("\\t", " ")
+
+
+def _slack_peek_messages(text: str) -> list[dict]:
+    body = _unwrap_clip(text)
+    found: list[dict] = []
+    pattern = re.compile(
+        r"===\s*Message from\s+(.+?)\s+\([A-Z0-9]+\)\s+at\s+(.+?)\s*===\s*"
+        r"(?:\nMessage TS:[^\n]*)?\n(.*?)(?=\n===\s*Message from|\Z)",
+        re.S,
+    )
+    for match in pattern.finditer(body):
+        who = re.sub(r"\s+", " ", match.group(1)).strip()
+        when = re.sub(r"\s+", " ", match.group(2)).strip()
+        msg = re.sub(r"\s+", " ", match.group(3)).strip()
+        msg = re.sub(r"\s*Reactions:.*$", "", msg).strip()
+        if not msg or who.lower() == "slackbot":
+            continue
+        found.append({"who": who, "when": when, "kind": "slack", "text": msg[:500]})
+        if len(found) >= 8:
+            break
+    return found
+
+
+def _mail_peek_body(text: str) -> str:
+    raw = _unwrap_clip(text)
+    parts = re.split(r"---\s*BODY\s*---", raw, maxsplit=1, flags=re.I)
+    body = parts[1] if len(parts) > 1 else raw
+    body = re.split(r"---\s*You'?re receiving emails", body, maxsplit=1, flags=re.I)[0]
+    body = re.sub(r"https://\S{80,}", lambda m: m.group(0)[:72] + "…", body)
+    body = re.sub(r"[ \t]+", " ", body)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body[:1600]
+
+
+def _sev1_slack_ids(data: dict) -> set[str]:
+    ids: set[str] = set()
+    for row in data.get("slackCandidates") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("sev1Channel") or row.get("sev1Case"):
+            ident = str(row.get("id") or "").strip()
+            if ident:
+                ids.add(ident)
+    return ids
+
+
+def _is_sev1_slack_row(it: dict, sev1_ids: set[str]) -> bool:
+    ident = str(it.get("id") or "").strip()
+    if ident and ident in sev1_ids:
+        return True
+    if it.get("sev1Channel") or it.get("sev1Case"):
+        return True
+    blob = " ".join(str(it.get(k) or "") for k in ("label", "channel", "detail"))
+    return bool(re.search(r"#sev1-|sev1-\d{5,}", blob, re.I))
+
+
+def _peek_is_raw(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    if raw.startswith("{") or '"messages"' in raw[:80]:
+        return True
+    if "Message TS:" in raw or "=== Message from" in raw or raw.startswith("Message ID:"):
+        return True
+    return False
+
+
+def _model_peek_summary(it: dict) -> str:
+    peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
+    summary = str(peek.get("summary") or it.get("summary") or "").strip()
+    if _peek_is_raw(summary):
+        summary = ""
+    detail = str(it.get("detail") or "").strip()
+    if summary:
+        return summary[:900]
+    if detail and not _peek_is_raw(detail) and detail.lower() not in ("swarm thread", "sev-1 channel"):
+        return detail[:900]
+    return ""
+
+
+def _required_thread_ids(text: str) -> set[str]:
+    """One id per swarm or involved channel. A second message in that channel is not a second card."""
+    newest: dict[str, tuple[float, str]] = {}
+    for block in re.split(r"\n(?=## slack )", text or ""):
+        ident = re.search(r"## slack (\S+)", block)
+        if not ident:
+            continue
+        channel = ""
+        match = re.search(r"(?m)^- channel: (.*)$", block)
+        if match:
+            channel = match.group(1).strip()
+        cid_m = re.search(r"(?m)^- channelId: (\S+)", block)
+        cid = cid_m.group(1) if cid_m else ""
+        if not re.match(r"^[CG][A-Z0-9]{8,}$", cid, re.I):
+            found = re.search(r"\b(C[A-Z0-9]{8,})\b", ident.group(1))
+            cid = found.group(1) if found else ""
+        swarm = bool(re.search(r"(?m)^- swarmCase:", block))
+        sev1 = bool(re.search(r"(?m)^- sev1Case:", block)) or bool(re.search(r"sev1-\d{5,}", channel, re.I))
+        dm = bool(re.search(r"\bDM\b", channel, re.I)) or ident.group(1).startswith("slack-D")
+        if sev1 or dm or not cid:
+            continue
+        if not swarm and not channel:
+            continue
+        ts_m = re.search(r"(?m)^- ts: (\d+(?:\.\d+)?)", block)
+        try:
+            ts = float(ts_m.group(1)) if ts_m else 0.0
+        except ValueError:
+            ts = 0.0
+        prev = newest.get(cid.upper())
+        if prev is None or ts >= prev[0]:
+            newest[cid.upper()] = (ts, ident.group(1))
+    return {row[1] for row in newest.values()}
+
+
+def _inbox_row_ids(payload: dict) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(payload, dict):
+        return ids
+    for key in ("slack", "mail"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        for grp in block.get("groups") or []:
+            if not isinstance(grp, dict):
+                continue
+            for it in grp.get("items") or []:
+                if isinstance(it, dict) and it.get("id"):
+                    ids.add(str(it["id"]))
+    return ids
+
+
+def _inbox_channel_ids(payload: dict) -> set[str]:
+    ids: set[str] = set()
+    if not isinstance(payload, dict):
+        return ids
+    block = payload.get("slack")
+    if not isinstance(block, dict):
+        return ids
+    for grp in block.get("groups") or []:
+        if not isinstance(grp, dict):
+            continue
+        for it in grp.get("items") or []:
+            if not isinstance(it, dict):
+                continue
+            cid = str(it.get("channelId") or "")
+            if not re.match(r"^[CG][A-Z0-9]{8,}$", cid, re.I):
+                found = re.search(r"\b(C[A-Z0-9]{8,})\b", str(it.get("id") or "") + " " + str(it.get("slackUrl") or ""))
+                cid = found.group(1) if found else ""
+            if cid:
+                ids.add(cid.upper())
+    return ids
+
+
+def _inbox_peek_gaps(payload: dict, inbox_text: str) -> list[str]:
+    gaps: list[str] = []
+    if not isinstance(payload, dict):
+        return ["plan-inbox.json is not an object"]
+    for key in ("slack", "mail"):
+        block = payload.get(key)
+        if not isinstance(block, dict):
+            continue
+        for grp in block.get("groups") or []:
+            if not isinstance(grp, dict):
+                continue
+            for it in grp.get("items") or []:
+                if not isinstance(it, dict):
+                    continue
+                if key == "slack" and _is_sev1_slack_row(it, set()):
+                    gaps.append("sev1 channel " + str(it.get("id") or it.get("label") or ""))
+                    continue
+                if not _model_peek_summary(it):
+                    gaps.append("no peek summary " + str(it.get("id") or it.get("label") or ""))
+    return gaps[:16]
+
+
+_UNLOADED_PEEK_RE = re.compile(
+    r"thread (?:itself )?was not loaded|was not opened|not been loaded|clip was not opened",
+    re.I,
+)
+
+
+def _stamp_inbox_peeks(data: dict) -> None:
+    """Keep a readable Slack or Mail message on the row. Sev-1 channels stay off the Slack card."""
+    if not isinstance(data, dict):
+        return
+    sev1_ids = _sev1_slack_ids(data)
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        title = str(sec.get("title") or "")
+        is_slack = bool(re.match(r"slack\b", title, re.I))
+        is_mail = bool(re.match(r"(mail|email|gmail)\b", title, re.I))
+        if not is_slack and not is_mail:
+            continue
+        if is_slack:
+            def _thread_was_loaded(it: dict) -> bool:
+                blob = str(it.get("detail") or "")
+                peek = it.get("peek")
+                if isinstance(peek, dict):
+                    blob += " " + str(peek.get("summary") or "")
+                return not _UNLOADED_PEEK_RE.search(blob)
+
+            kept_groups = []
+            for grp in sec.get("groups") or []:
+                if not isinstance(grp, dict):
+                    continue
+                grp["items"] = [
+                    it for it in (grp.get("items") or [])
+                    if isinstance(it, dict)
+                    and not _is_sev1_slack_row(it, sev1_ids)
+                    and _thread_was_loaded(it)
+                ]
+                if grp["items"]:
+                    kept_groups.append(grp)
+            sec["groups"] = kept_groups
+            sec["items"] = [
+                it for it in (sec.get("items") or [])
+                if isinstance(it, dict)
+                and not _is_sev1_slack_row(it, sev1_ids)
+                and _thread_was_loaded(it)
+            ]
+        rows: list[dict] = []
+        for it in sec.get("items") or []:
+            if isinstance(it, dict):
+                rows.append(it)
+        for grp in sec.get("groups") or []:
+            if isinstance(grp, dict):
+                rows.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
+        for it in rows:
+            summary = _model_peek_summary(it)
+            if summary:
+                it["peek"] = {"summary": summary}
+            elif isinstance(it.get("peek"), dict) and _peek_is_raw(str(it["peek"].get("summary") or "")):
+                it.pop("peek", None)
+            detail = str(it.get("detail") or "").strip()
+            if _peek_is_raw(detail):
+                detail = ""
+                it["detail"] = ""
+            if is_slack and not detail and summary:
+                sentence = re.split(r"(?<=\.)\s", summary)[0].strip()
+                it["detail"] = sentence[:160]
+            if is_slack and not it.get("kind"):
+                it["kind"] = "slack"
+            if is_mail and not it.get("kind"):
+                it["kind"] = "mail"
+        if is_slack and not rows and not sec.get("groups") and not sec.get("items"):
+            sec["empty"] = sec.get("empty") or "Slack — clear"
+
+
 def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
     if not isinstance(payload, dict):
         return
@@ -5598,6 +6033,7 @@ def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
             sanit = _sanitize_mod()
             sanit.peel_stray_inbox_rows(data)
             sanit.normalize_inbox_buckets(data)
+            _stamp_inbox_peeks(data)
         except Exception:
             pass
         try:
@@ -5846,7 +6282,7 @@ TODAY_PLAN_SYSTEM = """
 Build Today's plan only. Do not Read files. Do not rewrite /tmp/plan-ai.json.
 Write /tmp/plan-today.json once: {"todayPlan":[...]}.
 Each row: id, label, minutes, kind. Case windows also get caseNumber.
-Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
+Start of Day and Mid-Day: add Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases) only when Assembled has a Casework block. A Chat, Lunch, or Break shift with no Casework block does not get that row. When the day has both, the row belongs in the Casework window, not in Chat. Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
 Short breaks: 10–15 minutes, kind break, id plan-break-1 then plan-break-2. At most 4 a day. At least 45 minutes of other work between them. Never within 45 minutes before or after Breakfast, Lunch, Dinner, or a Snack already on the calendar. Not the last block of the shift. If freeMinutes is at least 180 and a break fits that gap, add one.
 Do not write an Open row. Leftover holes stay empty. The page draws them.
 End of Day: no Take New Cases and no short break. Named work only if the brief still has something owed. Empty todayPlan is allowed.
@@ -5894,6 +6330,7 @@ def today_plan_user_prompt() -> str:
         "Analysis is finished. Build Today's plan from this brief only.",
         f"daypart={gather.get('daypart') or ''} freeMinutes={gather.get('freeMinutes') or 0} "
         f"planFrom={gather.get('planFrom') or ''} planUntil={gather.get('planUntil') or ''}",
+        "Assembled: " + str(gather.get("assembledSchedule") or "none"),
         "Meetings:",
     ]
     for ev in (gather.get("meetings") or [])[:12]:
@@ -5955,7 +6392,9 @@ def fallback_today_plan() -> None:
     except (TypeError, ValueError):
         free = 0
     plan: list[dict] = []
-    if daypart != "eod" and free >= 60:
+    schedule = str(gather.get("assembledSchedule") or "")
+    on_casework = "casework" in schedule.lower()
+    if daypart != "eod" and free >= 60 and on_casework:
         plan.append(
             {
                 "id": "plan-new-cases",
@@ -6041,25 +6480,28 @@ Cover every ## slack and ## mail block before you Write. If a read fails or a sl
 
 Slack:
 - Drop done:true.
-- A leftover is something you still owe.
+- A clip that was not opened is a fetch miss. Do not keep that row. Do not write that the thread was not loaded, and do not tell anyone to open it.
+- Same rule for a DM, a swarm thread, and any other thread. If you replied last and that reply closed the loop, it is done. Do not list it. If you replied last and the loop is still open, list it. If someone else spoke last and a reply is still owed, list it.
+- A closed loop is a thank-you, an ack, a done, a "I'll update the customer", or any last line that settles the thread. An open loop is a question you asked, a next step you still owe, or a reply you are still waiting on.
 - Drop public #help / #support / #ask shouts with no @ you.
-- Keep a public thread only when you were @-mentioned and a reply is still owed.
+- A `- swarmCase:` clip is the thread from the case Swarm record. Read it. Keep it only when the loop is still open. Label is "#{case} — #{channel}".
+- A channel thread is here only because you were @mentioned or you wrote in it. Keep it only when the loop is still open. Do not keep it only because you are in the channel.
+- Do not put a `#sev1-` channel on the Slack card. A `- sev1Case:` clip is for the case, not a Slack row.
 - Keep GUS Bot Work Notifier posts. Do not drop them because they are a bot. Those posts are investigation updates. LAP updates are not in this bot. Investigation SLA is not in this bot.
 - Keep PSBot only in the group conversation it opens with you and your current manager. In that conversation: "has an SLO due" is a warning, "Out of SLO" is already late, and "long running category" names the Support Contact. Drop PSBot posts in any other channel.
 - Keep a Slackbot file titled "ALERT! 15 Minute SLA Warning" and a DM that says a named case will breach or must meet SLA.
 - Drop "SLA REMINDER - Schedule started" rota pings.
-- Drop when lastHumanIsMe is true, or the last human line is you.
-- Closing reactions (ack, white_check_mark, eyes as acknowledgment) can drop even when lastHumanIsMe is false.
+- Closing reactions (ack, white_check_mark, eyes as acknowledgment) close the loop. Drop that DM or thread.
 - Drop FYI, huddle over, and thanks that say they will update the customer.
-- Not opened = unread and still yours. Needs a reply = opened and you still owe a reply.
+- Not opened = unread and still yours. Needs a reply = opened and the loop is still open.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
-- DM label is "{peer} (DM)".
+- DM label is "{peer} (DM)". One card per person. One card per channel. One card per thread.
 
 Mail:
 - Drop done:true.
 - Drop demo-org expiry, calendar invitations, ICS, Gemini notes, Google Meet, Out of Office, and Black Tab sandbox success mail. Sandbox success is an operation-completed notice with no LAP case number. LAP-BlackTab-Bot mention mail is not in this file.
 - Drop meeting mail that only schedules, reschedules, cancels, or records accepted, declined, tentative, or maybe. Those already show on the calendar.
-- Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, that still needs a look.
+- Keep Chatter, GUS, or Black Tab mention, or ACTION REQUIRED, when a look or a reply is still owed. If you already replied and that reply closed the loop, drop it.
 - Keep a case SLA mail from no.reply@salesforce.com whose subject is "Case <number> will breach SLA in 30 minutes" or "Action Required | SLA Missed". The body names the case, the Response Target, and the ask (accept and a public comment, or close the loop).
 - Keep email about an investigation you support or follow. That is an investigation update, with GUS Bot. Investigation SLA is the PSBot group conversation, not mail.
 - Drop "SLA ROTA" roster mail. That is not a case or an investigation.
@@ -6070,6 +6512,7 @@ Group titles are only "Not opened" or "Needs a reply".
 Each group is {"title": "...", "items": [...]}. The array key is items.
 Each kept row copies id, label, slackUrl or mailUrl, channelId, ts, from, unread from the clip.
 slackBucket is "unread" or "reply". mailBucket is "unread" or "reply".
+You write the Peek. Each kept row has detail (one sentence) and peek {"summary": "2-4 sentences"}. Say what the thread or mail is about and what is still open. Plain sentences. Do not paste the clip, JSON, "Message TS", user ids, or mail headers.
 Omit every dropped row. Empty groups are allowed only when every clip was a drop.
 Then stop.
 """.strip()
@@ -6117,6 +6560,20 @@ def merge_classified_inbox() -> bool:
     return True
 
 
+def _inbox_repair_prompt(gaps: list[str]) -> str:
+    lines = "\n".join("- " + g for g in gaps[:12])
+    return (
+        "The Slack and Mail file is not ready. Fix only these. "
+        "A thread or DM stays off the list when this engineer's last reply closed the loop. "
+        "List it when that last reply left the loop open. "
+        "Do not add a #sev1- channel. "
+        "Each kept row needs a peek summary you write: 2-4 plain sentences. "
+        "Do not paste the clip, JSON, Message TS, or mail headers. "
+        "Write the complete /tmp/plan-inbox.json again. Then stop.\n"
+        + lines
+    )
+
+
 def classify_inbox(run_cli) -> bool:
     """Mandatory Slack and Gmail analysis. The page shows only the kept rows."""
     global PLAN_SYSTEM_OVERRIDE
@@ -6135,11 +6592,33 @@ def classify_inbox(run_cli) -> bool:
     finally:
         PLAN_SYSTEM_OVERRIDE = None
     ready = False
+    loaded: dict = {}
     try:
         loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
         ready = isinstance(loaded, dict) and loaded.get("inboxReviewed") is True
     except (OSError, json.JSONDecodeError):
         ready = False
+    gaps: list[str] = []
+    if ready:
+        try:
+            inbox_text = PLANNER_INBOX_TXT.read_text(encoding="utf-8")
+        except OSError:
+            inbox_text = ""
+        gaps = _inbox_peek_gaps(loaded, inbox_text)
+    if ready and gaps:
+        append_plan_step(kind="log", label="Slack and Mail peek incomplete. Asking the model again.")
+        PLAN_SYSTEM_OVERRIDE = system
+        try:
+            run_cli(prompt=_inbox_repair_prompt(gaps), timeout_sec=3 * 60)
+        except OSError as exc:
+            append_plan_step(kind="log", label="Slack and Mail peek retry could not start: " + clip(str(exc), 160))
+        finally:
+            PLAN_SYSTEM_OVERRIDE = None
+        try:
+            loaded = json.loads(pathlib.Path("/tmp/plan-inbox.json").read_text(encoding="utf-8"))
+            ready = isinstance(loaded, dict) and loaded.get("inboxReviewed") is True
+        except (OSError, json.JSONDecodeError):
+            ready = False
     if ready:
         append_plan_step(kind="log", label="Slack and Gmail filtered")
         return True
@@ -11273,7 +11752,7 @@ def gus_soql(soql: str) -> list:
     raise last or RuntimeError("gus query failed")
 
 
-def _modified_within_days(raw: str, days: int) -> bool:
+def _modified_since(raw: str, cutoff: datetime) -> bool:
     text = str(raw or "").strip()
     if not text:
         return False
@@ -11283,7 +11762,7 @@ def _modified_within_days(raw: str, days: int) -> bool:
         return False
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return when >= datetime.now(timezone.utc) - timedelta(days=days)
+    return when >= cutoff
 
 
 def _gus_role_has(role: str, token: str) -> bool:
@@ -11704,8 +12183,8 @@ def fill_gus_work(seeded: dict, rows: list) -> None:
                     continue
                 if not (_gus_role_has(role, "support-contact") or _gus_role_has(role, "follow")):
                     continue
-                lookback = inbox_lookback_days(str(seeded.get("timezone") or ""))
-                if not _modified_within_days(str(item.get("modified") or ""), lookback):
+                cutoff = inbox_cutoff(str(seeded.get("timezone") or ""))
+                if not _modified_since(str(item.get("modified") or ""), cutoff):
                     continue
                 if inv_n >= 6:
                     break

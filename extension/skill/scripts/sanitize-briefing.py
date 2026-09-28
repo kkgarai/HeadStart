@@ -226,7 +226,48 @@ def _slack_ts(item: dict) -> str:
     return ""
 
 
+def slack_channel_title(raw: object) -> str:
+    """Human channel name. Slack sometimes prefixes ZC:<channel id>:."""
+    text = re.sub(r"\s*\(ID:.*$", "", str(raw or "")).strip()
+    text = re.sub(r"(?i)ZC:[CGD][A-Z0-9]{8,}:", "", text).strip()
+    return text.lstrip("#").strip()
+
+
+def strip_zc_channel_token(text: object) -> str:
+    raw = str(text or "")
+    if "zc:" not in raw.lower():
+        return raw
+    return re.sub(r"(?i)ZC:[CGD][A-Z0-9]{8,}:", "", raw)
+
+
+def clean_slack_names(data: dict) -> None:
+    """Drop the ZC: channel-id prefix from Slack card titles."""
+    if not isinstance(data, dict):
+        return
+
+    def one(it: dict) -> None:
+        if str(it.get("kind") or "").lower() != "slack" and not _is_slack_row(it):
+            return
+        for key in ("label", "detail", "channel", "snippet"):
+            if it.get(key):
+                it[key] = strip_zc_channel_token(it[key])
+        peek = it.get("peek")
+        if isinstance(peek, dict):
+            for key in ("summary", "detail", "snippet"):
+                if peek.get(key):
+                    peek[key] = strip_zc_channel_token(peek[key])
+        elif isinstance(peek, str) and peek:
+            it["peek"] = strip_zc_channel_token(peek)
+
+    for _sec, it in _walk_items(data):
+        one(it)
+    for row in data.get("slackCandidates") or []:
+        if isinstance(row, dict):
+            one(row)
+
+
 def _slack_channel_key(item: dict) -> str:
+    """One list row per DM person or per channel. A second message in that channel is the same row."""
     cid = str(item.get("channelId") or item.get("slackChannel") or item.get("channel") or "").strip()
     if not re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
         url = str(item.get("slackUrl") or item.get("permalink") or "")
@@ -236,13 +277,22 @@ def _slack_channel_key(item: dict) -> str:
         else:
             ident = str(item.get("id") or "")
             m = re.search(r"([CGD][A-Z0-9]{8,})", ident)
-            cid = m.group(1) if m else ident
-    if re.match(r"^D[A-Z0-9]{8,}$", cid, re.I):
-        return cid
-    ts = _slack_ts(item)
-    if cid and ts:
-        return f"{cid}:{ts}"
-    return cid or str(item.get("id") or "")
+            cid = m.group(1) if m else ""
+    if re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
+        return cid.upper()
+    label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip().lower()
+    label = re.sub(r"\s*\(dm\)\s*$", "", label, flags=re.I).strip()
+    if label:
+        return "person:" + label
+    return str(item.get("id") or "")
+
+
+def _slack_row_time(item: dict) -> float:
+    raw = str(item.get("threadTs") or item.get("ts") or "")
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.0
 
 
 def _is_slack_row(item: dict) -> bool:
@@ -389,14 +439,10 @@ def normalize_inbox_buckets(data: dict) -> None:
             continue
         unread: list[dict] = []
         opened: list[dict] = []
-        seen: set[str] = set()
+        seen: dict[str, dict] = {}
 
         def take(it: dict, group_kind: str) -> None:
             ident = _slack_channel_key(it) if is_slack else str(it.get("id") or it.get("mailUrl") or "")
-            if ident and ident in seen:
-                return
-            if ident:
-                seen.add(ident)
             kind = group_kind or (
                 slack_item_kind(it) if is_slack else mail_item_kind(it)
             )
@@ -406,7 +452,22 @@ def normalize_inbox_buckets(data: dict) -> None:
                 it["slackBucket"] = "unread" if kind == "unread" else "reply"
             else:
                 it["mailBucket"] = "unread" if kind == "unread" else "reply"
-            (unread if kind == "unread" else opened).append(it)
+            bucket = unread if kind == "unread" else opened
+            if ident and ident in seen:
+                if not is_slack:
+                    return
+                prev = seen[ident]
+                if _slack_row_time(it) <= _slack_row_time(prev):
+                    return
+                for pile in (unread, opened):
+                    if prev in pile:
+                        pile.remove(prev)
+                bucket.append(it)
+                seen[ident] = it
+                return
+            if ident:
+                seen[ident] = it
+            bucket.append(it)
 
         for grp in sec.get("groups") or []:
             if not isinstance(grp, dict):
@@ -4817,6 +4878,39 @@ def _queue_block_minutes(open_n: int, *, slack: bool = False, mail: bool = False
     return 15
 
 
+def _clock_on_day(day: datetime, hour: int, minute: int, mark: str) -> tuple[int, int]:
+    hour = int(hour)
+    minute = int(minute)
+    flag = str(mark or "").upper()
+    if flag == "PM" and hour != 12:
+        hour += 12
+    if flag == "AM" and hour == 12:
+        hour = 0
+    return hour, minute
+
+
+def _assembled_casework_start(schedule: str, day: datetime) -> datetime | None:
+    """First Casework start today. Take New Cases is placed here, not in Chat."""
+    pat = re.compile(
+        r"\bCasework\s+(\d{1,2}):(\d{2})\s*(AM|PM)?\s*[–—-]\s*(\d{1,2}):(\d{2})\s*(AM|PM)",
+        re.I,
+    )
+    found = None
+    for match in pat.finditer(str(schedule or "")):
+        end_h, end_m = _clock_on_day(day, match.group(4), match.group(5), match.group(6))
+        start_mark = match.group(3) or ""
+        if start_mark:
+            start_h, start_m = _clock_on_day(day, match.group(1), match.group(2), start_mark)
+        else:
+            start_h, start_m = _clock_on_day(day, match.group(1), match.group(2), match.group(6))
+            if (start_h, start_m) > (end_h, end_m):
+                start_h, start_m = _clock_on_day(day, match.group(1), match.group(2), "AM")
+        start_at = day.replace(hour=start_h, minute=start_m, second=0, microsecond=0)
+        if found is None or start_at < found:
+            found = start_at
+    return found
+
+
 def _title_case_label(text: str) -> str:
     """Custom Today's plan titles: Take New Cases, not Take new cases. Keep DNS, IDM."""
 
@@ -4982,6 +5076,10 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
     used = set()
 
     def place_new_cases() -> None:
+        hours = str(data.get("assembledSchedule") or "")
+        if "casework" not in hours.lower():
+            return
+        casework_at = _assembled_casework_start(hours, day)
         new_mins = overrides.get("plan-new-cases") or (15 if mid_shift else 25)
         place(
             new_mins,
@@ -4993,7 +5091,7 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
                 start + timedelta(minutes=new_mins),
                 detail="Intake and first responses. Work the new queue here — not a case dump on this clock.",
             ),
-            after=after_login,
+            after=casework_at or after_login,
             avoid_buffer=True,
             shrink=10,
         )
@@ -5116,7 +5214,10 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
             and bool(hours)
             and hours.lower() != "nothing scheduled"
         )
-        if assembled and str(data.get("daypart") or "").lower() != "eod" and not any(
+        on_casework = "casework" in hours.lower()
+        if not on_casework:
+            specs = [spec for spec in specs if _plan_rank(spec) != 0]
+        elif assembled and str(data.get("daypart") or "").lower() != "eod" and not any(
             _plan_rank(spec) == 0 for spec in specs
         ):
             place_new_cases()
@@ -5258,8 +5359,12 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
                 )
                 done = total > 0 and open_n == 0
             after = None
-            if row_id in ("plan-slack", "plan-mail", "plan-new-cases"):
+            if row_id in ("plan-slack", "plan-mail"):
                 after = after_login
+            elif row_id == "plan-new-cases":
+                if "casework" not in str(data.get("assembledSchedule") or "").lower():
+                    continue
+                after = _assembled_casework_start(str(data.get("assembledSchedule") or ""), day) or after_login
             elif kind == "break" or row_id.startswith("plan-break"):
                 if short_n >= max_short:
                     continue
@@ -5307,6 +5412,7 @@ def compose_work_blocks(data: dict, now: datetime | None = None) -> dict:
         assembled = data.get("assembledFromCalendar") is True and hours and hours.lower() != "nothing scheduled"
         if (
             assembled
+            and "casework" in hours.lower()
             and str(data.get("daypart") or "").lower() != "eod"
             and "plan-new-cases" not in {str(r.get("id") or "") for r in placed}
         ):
@@ -5423,6 +5529,7 @@ def sanitize(data: dict) -> dict:
     refuse_false_gus_clear(data)
     normalize_inbox_buckets(data)
     relabel_slack_dms(data)
+    clean_slack_names(data)
     drop_invented_meetings(data)
     organize_plan(data)
     split_bunched_cases(data)

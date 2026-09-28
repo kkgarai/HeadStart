@@ -2068,7 +2068,7 @@
       <p class="foot-lead">This page is the briefing. Peek a case for Trust, ICC, and what is still unanswered. The red line on the clock is now.</p>
       <ul class="foot-hints">
         <li><strong>Done</strong> strikes that block on Today’s plan and silences its reminder. Undo anytime. It does not delete Google Calendar.</li>
-        <li><strong>Peek</strong> opens the case or GUS remainder without leaving the board.</li>
+        <li><strong>Peek</strong> opens the case, a Slack thread, a mail, or a GUS remainder without leaving the board.</li>
         <li><strong>Refresh Calendar</strong> reloads this shift’s meetings — not cases or Slack.</li>
         <li><strong>Schedule Meeting</strong> opens Calendar compose. Save there, then refresh.</li>
         <li><strong>Add Task</strong> stamps a Google Task with that block’s start and end.</li>
@@ -2077,7 +2077,7 @@
         <li><strong>10-min reminder</strong> is a popup with sound. <strong>Snooze 5 Min</strong> or <strong>Turn Off</strong> for that event.</li>
         <li><strong>Planner Buddy</strong> answers from this published page — latest on a case, next move, a draft, Done on Today’s plan (including those meetings).</li>
         <li><strong>Open Email</strong> jumps to Gmail. Slack uses <strong>Open Channel</strong>, <strong>Open DM</strong>, <strong>Open Thread</strong>, or <strong>Open Message</strong>.</li>
-        <li class="foot-wide"><strong>Omni</strong> — popup shows current Omni and the Assembled block covering now. Screen Sharing is never out. Else match that block (or Offline on Lunch/Break/Dinner). Sound every 15s until Got It; Got It lasts until the next :00 / :15 / :30 / :45 check.</li>
+        <li class="foot-wide"><strong>Omni</strong> — popup shows current Omni and the Assembled block covering now. Screen Sharing is never out. Else match that block (or Offline on Lunch/Break/Dinner). Sound every 15s until Got It; Got It lasts until the next :00 / :10 / :20 / :30 / :40 / :50 check.</li>
       </ul>
     </footer>
     <p class="copy">© 2026 Kiran Kumar Garai &lt;kgarai@salesforce.com&gt;. Skill authored by Kiran Kumar Garai.</p>
@@ -3525,6 +3525,10 @@
       function canPeek(item) {
         if (!item || !item.id || item.kind === "break" || item.autoBreak) return false;
         var k = String(item.kind || "").toLowerCase();
+        var id = String(item.id || "");
+        if (k === "slack" || k === "mail" || k === "email" || k === "gmail" || id.indexOf("slack-") === 0 || id.indexOf("mail-") === 0) {
+          return !!((item.peek && item.peek.summary) || item.detail || item.snippet || item.openedClip);
+        }
         if (item.gusBot === true) return false;
         if (k === "meeting" || k === "assembled" || k === "slack" || k === "mail" || k === "invite" || k === "fyi") return false;
         if (item.eventId || item.htmlLink || item.invite === true) return false;
@@ -3596,6 +3600,8 @@
           if (s.slackUrl) {
             primary.push('<a class="btn slack" href="' + esc(s.slackUrl) + '" target="_blank" rel="noopener">' + esc(slackOpenLabel(s, s.slackUrl)) + "</a>");
           }
+          var slackPeek = peekButton(item);
+          if (slackPeek) primary.push(slackPeek);
           if (canComplete(item, sec)) primary.push(doneMark(s.id));
           var bitsSlack = [];
           if (primary.length) bitsSlack.push('<div class="action-row">' + primary.join("") + "</div>");
@@ -3606,6 +3612,8 @@
           if (s.mailUrl) {
             primary.push('<a class="btn mail" href="' + esc(s.mailUrl) + '" target="_blank" rel="noopener">Open Email</a>');
           }
+          var mailPeek = peekButton(item);
+          if (mailPeek) primary.push(mailPeek);
           if (canComplete(item, sec)) primary.push(doneMark(s.id));
           var bitsMail = [];
           if (primary.length) bitsMail.push('<div class="action-row">' + primary.join("") + "</div>");
@@ -5101,11 +5109,38 @@
         if (!raw || !el) return;
         state.peekId = id;
         var k = String(raw.kind || "").toLowerCase();
+        var rowId = String(raw.id || "");
+        var inbox = k === "slack" || k === "mail" || k === "email" || k === "gmail" || rowId.indexOf("slack-") === 0 || rowId.indexOf("mail-") === 0;
         var kicker = "Peek";
-        if (k === "gus" || raw.gusUrl || raw.workId) kicker = "GUS";
+        if (inbox) kicker = (k === "mail" || k === "email" || k === "gmail" || rowId.indexOf("mail-") === 0) ? "Mail" : "Slack";
+        else if (k === "gus" || raw.gusUrl || raw.workId) kicker = "GUS";
         else if (raw.caseUrl || raw.caseNumber || k === "case" || caseToken(raw)) kicker = "Case";
         document.getElementById("peek-kicker").textContent = kicker;
         document.getElementById("peek-title").textContent = raw.label || "Peek";
+        if (inbox && raw.peek && Array.isArray(raw.peek.chronology) && raw.peek.chronology.length) {
+          var thread = '<p class="peek-h">Message</p><ol class="peek-chrono">';
+          raw.peek.chronology.forEach(function (ev) {
+            var who = (ev && ev.who) || "";
+            var at = (ev && ev.when) || "";
+            var text = peekClean((ev && ev.text) || "");
+            thread += "<li>";
+            thread += '<div class="peek-meta">';
+            if (who) thread += "<span>" + esc(who) + "</span>";
+            if (at) thread += "<span>" + esc(at) + "</span>";
+            thread += "</div>";
+            if (text) thread += "<p>" + esc(text) + "</p>";
+            thread += "</li>";
+          });
+          thread += "</ol>";
+          document.getElementById("peek-body").innerHTML = thread;
+          el.hidden = false;
+          el.classList.add("is-open");
+          el.setAttribute("aria-hidden", "false");
+          document.body.style.overflow = "hidden";
+          var threadClose = el.querySelector(".js-peek-close");
+          if (threadClose) threadClose.focus();
+          return;
+        }
         var paras = [];
         var seenPara = {};
         function addParas(text) {
@@ -5116,16 +5151,24 @@
           });
         }
         addParas((raw.peek && raw.peek.summary) || raw.summary);
-        if (!paras.length) addParas(raw.detail);
+        if (inbox) {
+          paras = [];
+          seenPara = {};
+          var blob = peekClean((raw.peek && raw.peek.summary) || raw.snippet || raw.openedClip || raw.detail || "");
+          if (blob) paras.push(blob);
+        } else {
+          if (!paras.length) addParas(raw.detail);
+        }
         var html = "";
-        html += '<p class="peek-h">Summary</p>';
+        html += '<p class="peek-h">' + (inbox ? "Message" : "Summary") + "</p>";
         if (paras.length) {
           html += '<div class="peek-summary">';
           paras.forEach(function (s) { html += "<p>" + esc(s) + "</p>"; });
           html += "</div>";
         } else {
-          html += '<p class="peek-empty">No summary on this row.</p>';
+          html += '<p class="peek-empty">' + (inbox ? "No message on this row." : "No summary on this row.") + "</p>";
         }
+        if (!inbox) {
         html += '<p class="peek-h">Chronology</p>';
         var chrono = peekChronoList(raw);
         if (chrono.length) {
@@ -5147,6 +5190,7 @@
           html += "</ol>";
         } else {
           html += '<p class="peek-empty">No chronology on this row.</p>';
+        }
         }
         document.getElementById("peek-body").innerHTML = html;
         el.hidden = false;
@@ -5477,6 +5521,12 @@
       document.getElementById("omni-ack").addEventListener("click", function (ev) {
         ev.preventDefault();
         omniControl("omniAck");
+      });
+      window.addEventListener("message", function (ev) {
+        var d = ev.data || {};
+        if (!d || d.source !== "engineer-day-planner") return;
+        if (d.type === "omni-alert") showOmniPopup(d.detail || {});
+        if (d.type === "omni-clear") hideOmniPopup();
       });
       window.addEventListener("edp-omni-alert", function (ev) {
         showOmniPopup(ev.detail || {});

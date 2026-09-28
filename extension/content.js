@@ -306,10 +306,17 @@ if (chrome.runtime && chrome.runtime.onMessage) {
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg || !msg.type) return;
     if (msg.type === "omniAlert") {
-      window.dispatchEvent(new CustomEvent("edp-omni-alert", { detail: msg }));
+      window.postMessage({
+        source: "engineer-day-planner",
+        type: "omni-alert",
+        detail: msg
+      }, "*");
     }
     if (msg.type === "omniClear") {
-      window.dispatchEvent(new CustomEvent("edp-omni-clear"));
+      window.postMessage({
+        source: "engineer-day-planner",
+        type: "omni-clear"
+      }, "*");
     }
   });
 }
