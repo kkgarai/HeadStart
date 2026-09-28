@@ -830,11 +830,6 @@ async function nagOmniSound() {
     await stopOmniSound();
     return;
   }
-  const tabs = await plannerTabs();
-  if (tabs.length) {
-    await stopOmniSound();
-    return;
-  }
   await playOmniSound();
 }
 
@@ -1010,10 +1005,8 @@ async function showOmniAlert(body) {
   if (shiftEndMs) await chrome.storage.local.set({ edpOmniShiftEnd: shiftEndMs });
   await chrome.storage.local.set({ edpOmniAlerting: true });
   const tabs = await plannerTabs();
-  let pageOpen = false;
   tabs.forEach((tab) => {
     if (!tab.id) return;
-    pageOpen = true;
     chrome.tabs.sendMessage(tab.id, {
       type: "omniAlert",
       title,
@@ -1023,12 +1016,16 @@ async function showOmniAlert(body) {
       shiftEndMs
     }).catch(() => {});
   });
-  if (!pageOpen) {
-    await playOmniSound();
-    await startOmniNagAlarm();
-  } else {
-    await stopOmniNagAlarm();
-  }
+  chrome.runtime.sendMessage({
+    type: "omniAlert",
+    title,
+    message,
+    omniStatus,
+    assembledNow,
+    shiftEndMs
+  }).catch(() => {});
+  await playOmniSound();
+  await startOmniNagAlarm();
   chrome.notifications.create(OMNI_NOTE, {
     type: "basic",
     iconUrl: noteIcon(),
@@ -1042,7 +1039,11 @@ async function showOmniAlert(body) {
 }
 
 async function checkOmni() {
-  const bridge = await currentBridge();
+  let bridge = await currentBridge();
+  if (!bridge) {
+    const found = await findBridge();
+    bridge = (found && found.bridgeUrl) || "";
+  }
   if (!bridge) return;
   let body;
   try {

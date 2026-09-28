@@ -5522,6 +5522,12 @@
         ev.preventDefault();
         omniControl("omniAck");
       });
+      window.addEventListener("message", function (ev) {
+        var d = ev.data || {};
+        if (!d || d.source !== "engineer-day-planner") return;
+        if (d.type === "omni-alert") showOmniPopup(d.detail || {});
+        if (d.type === "omni-clear") hideOmniPopup();
+      });
       window.addEventListener("edp-omni-alert", function (ev) {
         showOmniPopup(ev.detail || {});
       });
