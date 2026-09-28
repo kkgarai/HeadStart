@@ -6239,7 +6239,7 @@ TODAY_PLAN_SYSTEM = """
 Build Today's plan only. Do not Read files. Do not rewrite /tmp/plan-ai.json.
 Write /tmp/plan-today.json once: {"todayPlan":[...]}.
 Each row: id, label, minutes, kind. Case windows also get caseNumber.
-Start of Day and Mid-Day: first work row is Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases). Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
+Start of Day and Mid-Day: add Take New Cases (id plan-new-cases, 25 minutes, label Take New Cases) only when Assembled has a Casework block. A Chat, Lunch, or Break shift with no Casework block does not get that row. When the day has both, the row belongs in the Casework window, not in Chat. Then named work from the brief: Needs us now (id plan-case-<number>, 20–30 minutes, one case per row), Follow-up (id plan-follow-<number>, 5–10 minutes, one case per row). If slack leftovers is greater than 0, add one row id plan-slack, label Slack, 15 minutes. If mail leftovers is greater than 0, add one row id plan-mail, label Mail, 15 minutes. Promised close near logout is id plan-close.
 Short breaks: 10–15 minutes, kind break, id plan-break-1 then plan-break-2. At most 4 a day. At least 45 minutes of other work between them. Never within 45 minutes before or after Breakfast, Lunch, Dinner, or a Snack already on the calendar. Not the last block of the shift. If freeMinutes is at least 180 and a break fits that gap, add one.
 Do not write an Open row. Leftover holes stay empty. The page draws them.
 End of Day: no Take New Cases and no short break. Named work only if the brief still has something owed. Empty todayPlan is allowed.
@@ -6287,6 +6287,7 @@ def today_plan_user_prompt() -> str:
         "Analysis is finished. Build Today's plan from this brief only.",
         f"daypart={gather.get('daypart') or ''} freeMinutes={gather.get('freeMinutes') or 0} "
         f"planFrom={gather.get('planFrom') or ''} planUntil={gather.get('planUntil') or ''}",
+        "Assembled: " + str(gather.get("assembledSchedule") or "none"),
         "Meetings:",
     ]
     for ev in (gather.get("meetings") or [])[:12]:
@@ -6348,7 +6349,9 @@ def fallback_today_plan() -> None:
     except (TypeError, ValueError):
         free = 0
     plan: list[dict] = []
-    if daypart != "eod" and free >= 60:
+    schedule = str(gather.get("assembledSchedule") or "")
+    on_casework = "casework" in schedule.lower()
+    if daypart != "eod" and free >= 60 and on_casework:
         plan.append(
             {
                 "id": "plan-new-cases",
