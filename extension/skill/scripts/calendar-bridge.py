@@ -1539,6 +1539,25 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
         _GOOGLE_DX_OK = True
 
 
+def _gus_auth_log_ok() -> bool:
+    text = _auth_log_text(".dx-gus-auth.log")
+    return "OAuth authentication completed (provider=gus" in text
+
+
+def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
+    global _GUS_DX_OK
+    try:
+        code = proc.wait(timeout=900)
+    except Exception:
+        code = 1
+    if code == 0 or _gus_auth_log_ok():
+        _GUS_DX_OK = True
+
+
+def gus_dx_connected() -> bool:
+    return bool(_GUS_DX_OK or _gus_auth_log_ok())
+
+
 def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -> dict:
     """Open one sign-in page. A click with no browser is a failure, not a success."""
     if not find_mcp_adaptor_bin():
@@ -1559,6 +1578,8 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
     if shown or proc.poll() is None:
         if provider == "google-workspace-rw" and proc.poll() is None:
             threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
+        if provider == "gus":
+            threading.Thread(target=_mark_gus_auth_ok, args=(proc,), daemon=True).start()
         return {
             "ok": True,
             "started": True,
@@ -1649,6 +1670,7 @@ _DX_SERVER_SKIP: set[str] = set()
 _GOOGLE_FALLBACK_FAILED = False
 _GOOGLE_HTTP_DEAD = False
 _GOOGLE_DX_OK = False
+_GUS_DX_OK = False
 _GOOGLE_HTTP_LOCK = threading.Lock()
 _GOOGLE_HTTP_BOX: dict[str, str] = {"url": "", "session": "", "ready": ""}
 _DX_BUF = bytearray()
@@ -2116,6 +2138,7 @@ def _gus_session_connected(suite: dict) -> bool:
     checks = (
         ("sf", sf_gus_connected),
         ("aisuite", lambda: aisuite_gus_connected(suite)),
+        ("dx", gus_dx_connected),
     )
     for label, fn in checks:
         try:
