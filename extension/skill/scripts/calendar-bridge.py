@@ -1420,7 +1420,7 @@ def dx_google_connected() -> bool:
     Do not run `mcp-adaptor auth` here. That command starts a browser login,
     including when the flag is `--validate`.
     """
-    return bool(_GOOGLE_DX_OK or _dx_session_ready())
+    return bool(_GOOGLE_DX_OK or _dx_session_ready() or _google_auth_log_ok())
 
 
 def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
@@ -1529,32 +1529,39 @@ def _auth_shows_browser(log_name: str, proc: subprocess.Popen, wait: float = 4.0
     return ""
 
 
-def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
-    global _GOOGLE_DX_OK
-    try:
-        code = proc.wait(timeout=900)
-    except Exception:
-        return
-    if code == 0:
-        _GOOGLE_DX_OK = True
-
-
-def _gus_auth_log_ok() -> bool:
-    paths = [SKILL_ROOT / "out" / ".dx-gus-auth.log"]
+def _auth_log_ok(log_name: str, provider: str) -> bool:
+    """A finished adaptor login stays connected after the bridge restarts."""
+    paths = [SKILL_ROOT / "out" / log_name]
     runs = HOME / "Library" / "Application Support" / "engineer-day-planner" / "runs"
     if runs.is_dir():
-        paths.extend(runs.glob("*/skill/out/.dx-gus-auth.log"))
+        paths.extend(runs.glob("*/skill/out/" + log_name))
+    marker = "OAuth authentication completed (provider=" + provider
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if (
-            "OAuth authentication completed (provider=gus" in text
-            or "Authentication successful" in text
-        ):
+        if marker in text or "Authentication successful" in text:
             return True
     return False
+
+
+def _google_auth_log_ok() -> bool:
+    return _auth_log_ok(".dx-google-auth.log", "google-workspace-rw")
+
+
+def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
+    global _GOOGLE_DX_OK
+    try:
+        code = proc.wait(timeout=900)
+    except Exception:
+        code = 1
+    if code == 0 or _google_auth_log_ok():
+        _GOOGLE_DX_OK = True
+
+
+def _gus_auth_log_ok() -> bool:
+    return _auth_log_ok(".dx-gus-auth.log", "gus")
 
 
 def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
@@ -1606,12 +1613,12 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
 
 def begin_google_sign_in() -> dict:
     """Use the AI Suite Google session when it is already there. Otherwise open one page."""
-    if aisuite_server_connected(aisuite_manager_servers(), "google-workspace"):
+    if aisuite_server_connected(aisuite_manager_servers(), "google-workspace") or dx_google_connected():
         return {
             "ok": True,
             "already": True,
             "started": False,
-            "message": "Google is already connected in AI Suite.",
+            "message": "Google is already connected.",
         }
     return begin_provider_sign_in(
         "google-workspace-rw",
@@ -1641,7 +1648,7 @@ def start_dx_google_auth(*, user_clicked: bool = False) -> None:
     """
     if not user_clicked:
         return
-    if _GOOGLE_DX_OK or _dx_session_ready():
+    if dx_google_connected():
         return
     begin_google_sign_in()
 
