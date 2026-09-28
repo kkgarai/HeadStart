@@ -1932,7 +1932,12 @@ def discover_mcp_servers(runner: str = "") -> dict[str, dict]:
     for root in mcp_plugin_roots_for(runner):
         if not root.is_dir():
             continue
-        for path in root.glob("**/.mcp.json"):
+        try:
+            mcp_files = list(root.glob("**/.mcp.json"))
+        except OSError as exc:
+            _mcp_status_log("mcp scan: " + str(exc))
+            continue
+        for path in mcp_files:
             if (path.parent / ".orphaned_at").exists():
                 continue
             try:
@@ -2011,8 +2016,11 @@ def ping_stdio_mcp(cfg: dict) -> str:
     command = str(cfg.get("command") or "").strip()
     if not command:
         return "disconnected"
-    if os.path.isfile(command) or shutil.which(command):
-        return "connected"
+    try:
+        if os.path.isfile(command) or shutil.which(command):
+            return "connected"
+    except OSError:
+        return "disconnected"
     return "disconnected"
 
 
@@ -2148,7 +2156,11 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
         row = by_id[key]
         if row["status"] == "connected":
             continue
-        candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        try:
+            candidates = mcp_server_candidates(servers, names) + aisuite_candidates_for(key)
+        except OSError as exc:
+            _mcp_status_log(key + " mcp: " + str(exc))
+            continue
         for cfg in candidates:
             if looks_oauth(cfg) and not _mcp_cfg_bearer(cfg):
                 # OrgCS queries run in the fetch sidecar with the user's Claude
@@ -2157,9 +2169,17 @@ def _apply_configured_mcp_pings(by_id: dict) -> None:
                     _mcp_mark(by_id, key)
                     break
                 continue
-            url = str(cfg.get("url") or "").strip()
+            try:
+                url = str(cfg.get("url") or "").strip()
+            except Exception:
+                continue
             if not url:
-                if ping_stdio_mcp(cfg) == "connected":
+                try:
+                    up = ping_stdio_mcp(cfg) == "connected"
+                except OSError as exc:
+                    _mcp_status_log(key + " stdio: " + str(exc))
+                    continue
+                if up:
                     _mcp_mark(by_id, key)
                     break
                 continue
@@ -2213,6 +2233,41 @@ def _mcp_status_notes(by_id: dict, suite: dict) -> None:
         google["note"] = google_note
 
 
+def _schedule_mcp_bridge_restart(exc: BaseException) -> None:
+    """Replace this process once. A fresh bridge rechecks MCP logins. A plan in progress stays up."""
+    if PLAN_ACTIVE.is_set():
+        _mcp_status_log("mcp restart skipped, plan is running")
+        return
+    stamp = SKILL_ROOT / "out" / ".mcp-restart-at"
+    now = time.time()
+    try:
+        prev = float((stamp.read_text(encoding="utf-8") or "0").strip() or "0")
+    except (OSError, ValueError):
+        prev = 0.0
+    if now - prev < 180:
+        _mcp_status_log("mcp restart already tried")
+        return
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(now), encoding="utf-8")
+    except OSError:
+        return
+    _mcp_status_log("mcp check failed, restarting bridge: " + str(exc))
+
+    def go() -> None:
+        time.sleep(0.6)
+        try:
+            shutdown_our_listeners()
+        except Exception as err:
+            _mcp_status_log("mcp restart shutdown: " + str(err))
+        try:
+            start_detached()
+        except Exception as err:
+            _mcp_status_log("mcp restart start: " + str(err))
+
+    threading.Thread(target=go, daemon=True).start()
+
+
 def planner_mcp_status(runner: str = "") -> list[dict]:
     del runner
     rows = [
@@ -2230,6 +2285,7 @@ def planner_mcp_status(runner: str = "") -> list[dict]:
         _apply_configured_mcp_pings(by_id)
     except Exception as exc:
         _mcp_status_log("mcp ping: " + str(exc))
+        _schedule_mcp_bridge_restart(exc)
     orgcs = by_id.get("orgcs")
     if orgcs and orgcs.get("status") != "connected":
         try:

@@ -452,7 +452,11 @@ async function syncFromBridge() {
     chrome.action.setBadgeText({ text: "" });
     return "";
   }
-  const bridge = await currentBridge();
+  let bridge = await currentBridge();
+  if (!bridge) {
+    const found = await findBridge();
+    bridge = (found && found.bridgeUrl) || "";
+  }
   if (!bridge) {
     chrome.action.setBadgeText({ text: "" });
     return bridge;
