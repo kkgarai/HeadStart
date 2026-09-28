@@ -751,6 +751,31 @@ def update_check(requested: str) -> dict:
     }
 
 
+def _close_update_terminal(win_id: str) -> None:
+    ident = str(win_id or "").strip()
+    if not ident.isdigit():
+        return
+    script = (
+        'tell application "Terminal"\n'
+        "  repeat with w in windows\n"
+        "    try\n"
+        f"      if (id of w as text) is \"{ident}\" then close w\n"
+        "    end try\n"
+        "  end repeat\n"
+        "end tell"
+    )
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            cwd="/tmp",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def terminal_reset(root: pathlib.Path) -> bool:
     """Desktop, Documents, and Downloads are blocked for Chrome's host. Terminal can still write them."""
     if sys.platform != "darwin":
@@ -768,20 +793,33 @@ def terminal_reset(root: pathlib.Path) -> bool:
         "git -C '%s' reset --hard \"$ref\" && "
         "echo ok > '%s'; exit"
     ) % (root_s, root_s, root_s, status_s)
+    apple = (
+        'tell application "Terminal"\n'
+        "  set t to do script " + json.dumps(shell) + "\n"
+        "  try\n"
+        "    return id of (first window whose tabs contains t)\n"
+        "  end try\n"
+        "  return id of front window\n"
+        "end tell"
+    )
+    win_id = ""
     try:
-        subprocess.run(
-            ["osascript", "-e", "tell application \"Terminal\" to do script " + json.dumps(shell)],
+        proc = subprocess.run(
+            ["osascript", "-e", apple],
             cwd="/tmp",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=20,
         )
+        win_id = (proc.stdout or "").strip()
     except (OSError, subprocess.SubprocessError):
         return False
     deadline = time.time() + 90
     while time.time() < deadline:
         try:
             if status.read_text(encoding="utf-8").strip() == "ok":
+                time.sleep(0.6)
+                _close_update_terminal(win_id)
                 return True
         except OSError:
             pass
