@@ -3788,7 +3788,7 @@ _SLACK_BOT_HIT = re.compile(
     re.I,
 )
 _SLACK_CURSOR_RE = re.compile(
-    r"(?:for the next page of results use cursor|next_cursor)\s*[`'\"]?\s*[:=]?\s*[`'\"]?([A-Za-z0-9=+\-/_]+)",
+    r"(?:for the next page of results use cursor|next_cursor|use cursor)\s*[`'\"]?\s*[:=]?\s*[`'\"]?([A-Za-z0-9=+\-/_]+)",
     re.I,
 )
 _CLIP_SPEAKER_RE = re.compile(
@@ -4736,7 +4736,9 @@ def write_planner_inbox_txt(slack: list, mail: list) -> None:
     slack_rows = [
         row
         for row in (slack or [])
-        if not _sanitize_mod().is_gus_notice(row) and _inbox_still_open(row, done_keys)
+        if not _sanitize_mod().is_gus_notice(row)
+        and _inbox_still_open(row, done_keys)
+        and str(row.get("openedClip") or "").strip()
     ]
     mail_rows = [
         row
@@ -4840,13 +4842,14 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
         item, tool, args = job
         clip_parts: list[str] = []
         cursor = ""
-        for _ in range(3):
+        for _ in range(6):
             payload = dict(args)
             if cursor:
                 payload["cursor"] = cursor
             try:
-                text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=25)
-            except Exception:
+                text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=45)
+            except Exception as exc:
+                item["_openError"] = clip(str(exc), 160)
                 break
             raw = str(text or "").strip()
             if raw:
@@ -4879,6 +4882,13 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         for n in pool.map(one, jobs):
             opened += n
+    missed = [job for job in jobs if not job[0].get("openedClip")]
+    for job in missed:
+        opened += one(job)
+    still = [job[0] for job in jobs if not job[0].get("openedClip")]
+    if still:
+        names = ", ".join(str(item.get("channel") or item.get("id") or "") for item in still[:8])
+        append_plan_step(kind="log", label=f"Slack thread open failed · {len(still)} · {names}")
     return opened
 
 
@@ -5739,6 +5749,12 @@ def _inbox_peek_gaps(payload: dict, inbox_text: str) -> list[str]:
     return gaps[:16]
 
 
+_UNLOADED_PEEK_RE = re.compile(
+    r"thread (?:itself )?was not loaded|was not opened|not been loaded|clip was not opened",
+    re.I,
+)
+
+
 def _stamp_inbox_peeks(data: dict) -> None:
     """Keep a readable Slack or Mail message on the row. Sev-1 channels stay off the Slack card."""
     if not isinstance(data, dict):
@@ -5753,20 +5769,31 @@ def _stamp_inbox_peeks(data: dict) -> None:
         if not is_slack and not is_mail:
             continue
         if is_slack:
+            def _thread_was_loaded(it: dict) -> bool:
+                blob = str(it.get("detail") or "")
+                peek = it.get("peek")
+                if isinstance(peek, dict):
+                    blob += " " + str(peek.get("summary") or "")
+                return not _UNLOADED_PEEK_RE.search(blob)
+
             kept_groups = []
             for grp in sec.get("groups") or []:
                 if not isinstance(grp, dict):
                     continue
                 grp["items"] = [
                     it for it in (grp.get("items") or [])
-                    if isinstance(it, dict) and not _is_sev1_slack_row(it, sev1_ids)
+                    if isinstance(it, dict)
+                    and not _is_sev1_slack_row(it, sev1_ids)
+                    and _thread_was_loaded(it)
                 ]
                 if grp["items"]:
                     kept_groups.append(grp)
             sec["groups"] = kept_groups
             sec["items"] = [
                 it for it in (sec.get("items") or [])
-                if isinstance(it, dict) and not _is_sev1_slack_row(it, sev1_ids)
+                if isinstance(it, dict)
+                and not _is_sev1_slack_row(it, sev1_ids)
+                and _thread_was_loaded(it)
             ]
         rows: list[dict] = []
         for it in sec.get("items") or []:
@@ -6407,6 +6434,7 @@ Cover every ## slack and ## mail block before you Write. If a read fails or a sl
 
 Slack:
 - Drop done:true.
+- A clip that was not opened is a fetch miss. Do not keep that row. Do not write that the thread was not loaded, and do not tell anyone to open it.
 - Same rule for a DM, a swarm thread, and any other thread. If you replied last and that reply closed the loop, it is done. Do not list it. If you replied last and the loop is still open, list it. If someone else spoke last and a reply is still owed, list it.
 - A closed loop is a thank-you, an ack, a done, a "I'll update the customer", or any last line that settles the thread. An open loop is a question you asked, a next step you still owe, or a reply you are still waiting on.
 - Drop public #help / #support / #ask shouts with no @ you.
