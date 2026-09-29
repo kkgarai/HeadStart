@@ -32,8 +32,8 @@ function omniStatusLabel(records) {
 }
 const OMNI_KIND_TOKENS = {
   casework: ["case", "casework"],
-  chat: ["chat", "live"],
-  messaging: ["messaging", "message"],
+  chat: ["chat", "live", "messaging", "message"],
+  messaging: ["messaging", "message", "chat", "live"],
   voice: ["voice"],
   lunch: ["lunch", "meal"],
   break: ["break"]

@@ -9101,8 +9101,8 @@ def omni_alert_message(omni_status: str, assembled_now: str) -> str:
 OMNI_SHIFT_GAP = timedelta(hours=3)
 OMNI_KIND_TOKENS = {
     "casework": frozenset({"case", "casework"}),
-    "chat": frozenset({"chat", "live"}),
-    "messaging": frozenset({"messaging", "message"}),
+    "chat": frozenset({"chat", "live", "messaging", "message"}),
+    "messaging": frozenset({"messaging", "message", "chat", "live"}),
     "voice": frozenset({"voice"}),
     "lunch": frozenset({"lunch", "meal"}),
     "break": frozenset({"break"}),
@@ -9546,7 +9546,8 @@ def omni_in_adherence(label: str, kinds: list[str]) -> bool:
 
     In adherence = Screen Sharing (any block, never OOA) or the status for
     the Assembled block covering now. Work: Available* / Chat Online that
-    includes that channel (combos count). Lunch / Break / Dinner: that meal
+    includes that channel (combos count). Chat and Messaging are the same
+    channel. Lunch / Break / Dinner: that meal
     label, or Offline / no Omni row / End of Work. Busy is never in
     adherence on a work block.
     """
