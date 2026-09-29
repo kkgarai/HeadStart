@@ -13024,6 +13024,81 @@ def shift_logout_ms(data: dict, now: datetime | None = None) -> int:
     return int(end.timestamp() * 1000)
 
 
+_CUSTOMER_WAIT_RE = re.compile(
+    r"solution provided|need(?:s)? more information|\bnmi\b",
+    re.I,
+)
+_CHATTER_NOTICE_RE = re.compile(
+    r"chatter-notifications|mentioned you in a (?:post|comment)|also commented on a post",
+    re.I,
+)
+_CLOSED_LAP_RE = re.compile(r"closed\s*-\s*executed|\bstatus is closed\b", re.I)
+_SLACK_WAITING_ON_THEM_RE = re.compile(
+    r"you can close|no reply|no answer yet|has not replied|have no answer",
+    re.I,
+)
+_LAP_NUM_RE = re.compile(r"(?:LAP\s+|gusmail-|lap-)(\d{5,})", re.I)
+
+
+def _logout_blob(it: dict) -> str:
+    return " ".join(str(it.get(k) or "") for k in ("id", "label", "detail", "status"))
+
+
+def _logout_follow_count(items: list) -> int:
+    """Solution Provided and Need More Information are waiting on the customer."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _CUSTOMER_WAIT_RE.search(_logout_blob(it)):
+            continue
+        n += 1
+    return n
+
+
+def _logout_mail_count(items: list) -> int:
+    """Chatter notification mail is not an email still waiting on a reply."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _CHATTER_NOTICE_RE.search(_logout_blob(it)):
+            continue
+        n += 1
+    return n
+
+
+def _logout_slack_count(items: list) -> int:
+    """A thread you already closed, or that is waiting on them, is not still open."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _SLACK_WAITING_ON_THEM_RE.search(str(it.get("detail") or "")):
+            continue
+        n += 1
+    return n
+
+
+def _logout_gus_count(items: list) -> int:
+    """One open LAP. Closed and repeated rows for the same LAP count once, as closed."""
+    state: dict[str, str] = {}
+    for it in items:
+        if it.get("done") is True:
+            continue
+        blob = _logout_blob(it)
+        laps = _LAP_NUM_RE.findall(blob)
+        if not laps:
+            continue
+        closed = bool(_CLOSED_LAP_RE.search(blob))
+        for num in laps:
+            if closed or state.get(num) == "closed":
+                state[num] = "closed"
+            elif num not in state:
+                state[num] = "open"
+    return sum(1 for value in state.values() if value == "open")
+
+
 def snapshot_payload() -> dict:
     data = load_live_briefing()
     remind = []
@@ -13078,17 +13153,16 @@ def snapshot_payload() -> dict:
         for grp in sec.get("groups") or []:
             if isinstance(grp, dict):
                 bag.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
-        n = sum(1 for it in bag if it.get("done") is not True)
         if title.startswith("slack"):
-            pending["slack"] += n
+            pending["slack"] += _logout_slack_count(bag)
         elif re.search(r"\b(mail|email|gmail)\b", title):
-            pending["mail"] += n
+            pending["mail"] += _logout_mail_count(bag)
         elif "follow-up" in title or "follow up" in title:
-            pending["followUps"] += n
+            pending["followUps"] += _logout_follow_count(bag)
         elif "needs us now" in title or "needs you now" in title:
-            pending["needsNow"] += n
+            pending["needsNow"] += sum(1 for it in bag if it.get("done") is not True)
         elif title.startswith("gus"):
-            pending["gus"] += n
+            pending["gus"] += _logout_gus_count(bag)
     summary_lines = ["30 Minutes Until Logout"]
     if pending["needsNow"]:
         summary_lines.append(str(pending["needsNow"]) + " Needs Us Now")
