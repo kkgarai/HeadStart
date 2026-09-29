@@ -19,7 +19,7 @@ import time
 import urllib.request
 
 CHROME_EXTENSION_ID = "ojpfakkcgmefanbomdfpglbioapoabfh"
-HOST_LOGIC_VERSION = 6
+HOST_LOGIC_VERSION = 7
 
 
 def read_msg():
@@ -856,10 +856,97 @@ def update_apply(requested: str) -> dict:
     return {"ok": True, "version": version}
 
 
+def _pid_alive(pidfile: pathlib.Path) -> bool:
+    try:
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _logout_dialog_worker(title: str, message: str, key: str) -> None:
+    folder = support_dir()
+    stamp = folder / f"logout-ack-{key}"
+    pidfile = folder / f"logout-dialog-{key}.pid"
+    try:
+        pidfile.write_text(str(os.getpid()), encoding="utf-8")
+        code = subprocess.call(
+            [
+                "osascript",
+                "-e",
+                "on run argv\n"
+                'display dialog (item 2 of argv) with title (item 1 of argv) '
+                'buttons {"OK"} default button "OK" with icon caution\n'
+                "end run",
+                title,
+                message,
+            ]
+        )
+        if code == 0:
+            stamp.write_text("ok", encoding="utf-8")
+    finally:
+        try:
+            pidfile.unlink()
+        except OSError:
+            pass
+
+
+def logout_alert(title: str, message: str, key: str) -> dict:
+    """A dialog that stays until OK. Chrome banners were marked shown and never seen."""
+    digits = "".join(ch for ch in str(key or "") if ch.isdigit())[:16]
+    if not digits:
+        return {"ok": False, "error": "missing logout key"}
+    folder = support_dir()
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)[:240]}
+    stamp = folder / f"logout-ack-{digits}"
+    if stamp.is_file():
+        return {"ok": True, "acked": True}
+    pidfile = folder / f"logout-dialog-{digits}.pid"
+    if _pid_alive(pidfile):
+        return {"ok": True, "showing": True}
+    host = pathlib.Path(sys.argv[0]).resolve()
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(host),
+            "--logout-dialog",
+            str(title or "30 Minutes Before Logout")[:80],
+            str(message or "Nothing Still Open")[:300],
+            digits,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        cwd="/tmp",
+    )
+    try:
+        pidfile.write_text(str(proc.pid), encoding="utf-8")
+    except OSError:
+        pass
+    return {"ok": True, "started": True}
+
+
 def main() -> None:
     msg = read_msg() or {}
     cmd = str(msg.get("cmd") or "ensure").strip().lower()
     requested = str(msg.get("version") or "").strip()
+    if cmd == "logout-alert":
+        write_msg(
+            logout_alert(
+                str(msg.get("title") or ""),
+                str(msg.get("message") or ""),
+                str(msg.get("key") or ""),
+            )
+        )
+        return
     if cmd == "update-check":
         write_msg(update_check(requested))
         return
@@ -933,4 +1020,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) >= 5 and sys.argv[1] == "--logout-dialog":
+        _logout_dialog_worker(sys.argv[2], sys.argv[3], sys.argv[4])
+    else:
+        main()

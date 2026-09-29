@@ -448,6 +448,8 @@ async function markOff(id) {
 async function syncFromBridge() {
   const tabs = await plannerTabs();
   if (!tabs.length) {
+    const stored = await chrome.storage.local.get(["snapshot"]);
+    await scheduleLogoutPending(stored.snapshot);
     await stopNativeBridge();
     chrome.action.setBadgeText({ text: "" });
     return "";
@@ -607,21 +609,41 @@ async function showPlannerNote(id, title, message, buttons) {
   return created;
 }
 
+async function ackLogout() {
+  const stored = await chrome.storage.local.get(["snapshot"]);
+  const end = Number(stored.snapshot && stored.snapshot.shiftEndMs) || 0;
+  if (!end) return;
+  await chrome.storage.local.set({ edpLogoutAck: String(end) });
+  await chrome.alarms.clear("edp-logout-pending");
+}
+
+function nativeMessage(payload) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, (res) => {
+        const err = chrome.runtime.lastError;
+        resolve(err ? null : res || null);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
 async function fireLogoutPending(end) {
   const key = String(end || "");
   const now = Date.now();
-  if (end && now >= end + LOGOUT_GRACE_MS) return;
-  const stored = await chrome.storage.local.get(["snapshot", "edpLogoutShown"]);
-  if (key && stored.edpLogoutShown === key) return;
+  if (!end || now < end - LOGOUT_LEAD_MS || now >= end + LOGOUT_GRACE_MS) return;
+  const stored = await chrome.storage.local.get(["snapshot", "edpLogoutAck"]);
+  if (stored.edpLogoutAck === key) return;
   const pending = (stored.snapshot && stored.snapshot.pending) || {};
-  const created = await showPlannerNote(
-    "logout-" + (key || now),
-    "30 Minutes Before Logout",
-    pendingLine(pending),
-    [{ title: "OK" }]
-  );
-  if (!created) return;
-  await chrome.storage.local.set({ edpLogoutShown: key || String(now) });
+  const res = await nativeMessage({
+    cmd: "logout-alert",
+    title: "30 Minutes Before Logout",
+    message: pendingLine(pending),
+    key: key
+  });
+  if (res && res.acked) await ackLogout();
 }
 
 async function scheduleLogoutPending(snap) {
@@ -629,8 +651,8 @@ async function scheduleLogoutPending(snap) {
   if (!end) return;
   const when = end - LOGOUT_LEAD_MS;
   const now = Date.now();
-  const stored = await chrome.storage.local.get(["edpLogoutShown"]);
-  if (stored.edpLogoutShown === String(end) || now >= end + LOGOUT_GRACE_MS) {
+  const stored = await chrome.storage.local.get(["edpLogoutAck"]);
+  if (stored.edpLogoutAck === String(end) || now >= end + LOGOUT_GRACE_MS) {
     await chrome.alarms.clear("edp-logout-pending");
     return;
   }
@@ -644,15 +666,15 @@ async function scheduleLogoutPending(snap) {
 
 function pendingLine(pending) {
   const p = pending || {};
-  const lines = ["30 Minutes Until Logout"];
-  if (p.needsNow) lines.push(p.needsNow + " Needs Us Now");
-  if (p.followUps) lines.push(p.followUps + (Number(p.followUps) === 1 ? " Follow-Up" : " Follow-Ups"));
-  if (p.slack) lines.push(p.slack + " Slack");
-  if (p.mail) lines.push(p.mail + " Email");
-  if (p.gus) lines.push(p.gus + " GUS");
-  if (lines.length === 1) lines.push("Nothing Still Open");
-  else lines[lines.length - 1] += " Still Open";
-  return lines.join("\n");
+  const parts = [];
+  if (p.needsNow) parts.push(p.needsNow + " Needs Us Now");
+  if (p.followUps) parts.push(p.followUps + (Number(p.followUps) === 1 ? " Follow-Up" : " Follow-Ups"));
+  if (p.slack) parts.push(p.slack + " Slack");
+  if (p.mail) parts.push(p.mail + " Email");
+  if (p.gus) parts.push(p.gus + " GUS");
+  if (!parts.length) return "Nothing Still Open";
+  parts[parts.length - 1] += " Still Open";
+  return parts.join(" · ");
 }
 
 async function startLogoutSound() {
@@ -751,6 +773,7 @@ chrome.notifications.onButtonClicked.addListener(async (noteId, button) => {
     return;
   }
   if (isLogoutNote(noteId)) {
+    await ackLogout();
     chrome.notifications.clear(noteId);
     return;
   }
