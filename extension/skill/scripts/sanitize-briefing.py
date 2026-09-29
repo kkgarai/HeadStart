@@ -3857,10 +3857,29 @@ def _owned_digit_set(owned) -> set[str]:
     return out
 
 
+def _gather_case_numbers() -> set[str]:
+    """Cases this run already queued. A later shorter Case query must not delete them."""
+    gather = _load_planner_gather()
+    nums: set[str] = set()
+    for row in gather.get("cases") or []:
+        if not isinstance(row, dict):
+            continue
+        n = str(row.get("caseNumber") or row.get("CaseNumber") or "").strip()
+        if not n:
+            continue
+        nums.add(n)
+        match = CASE_NUM_RE.search(n)
+        if match:
+            nums.add(match.group(1))
+    return nums
+
+
 def live_owned_case_numbers(owned=None) -> set[str] | None:
     """None = ownership unknown (do not strip). set, including empty, is this run's bin."""
     if owned is not None:
-        return _owned_digit_set(owned)
+        nums = _owned_digit_set(owned)
+        nums |= _gather_case_numbers()
+        return nums
     try:
         obj = json.loads(pathlib.Path("/tmp/owned-cases.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
@@ -3876,20 +3895,11 @@ def live_owned_case_numbers(owned=None) -> set[str] | None:
                 match = CASE_NUM_RE.search(n)
                 if match:
                     nums.add(match.group(1))
+        nums |= _gather_case_numbers()
         return nums
-    gather = _load_planner_gather()
-    if gather.get("orgcsFetchOk") is True:
-        nums = set()
-        for row in gather.get("cases") or []:
-            if not isinstance(row, dict):
-                continue
-            n = str(row.get("caseNumber") or row.get("CaseNumber") or "").strip()
-            if n:
-                nums.add(n)
-                match = CASE_NUM_RE.search(n)
-                if match:
-                    nums.add(match.group(1))
-        return nums
+    gather_nums = _gather_case_numbers()
+    if gather_nums and _load_planner_gather().get("orgcsFetchOk") is True:
+        return gather_nums
     return None
 
 

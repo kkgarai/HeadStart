@@ -5899,6 +5899,7 @@ def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
 
 def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
     apply_activity_file(data)
+    merge_today_plan_file()
     path = pathlib.Path("/tmp/plan-ai.json")
     try:
         if not path.is_file() or path.stat().st_mtime < (started_epoch - 2):
