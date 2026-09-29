@@ -6112,13 +6112,15 @@ def ensure_open_plan_row() -> None:
 def repair_plan_prompt(fails: list[str]) -> str:
     lines = "\n".join("- " + f for f in fails[:12])
     return (
-        "The page did not publish. These are the only blockers. Find a way through them "
-        "from the files already on disk. Do not re-gather. Do not Slack, Gmail, or SOQL. "
-        "Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
+        "The page did not publish. Fix these blockers in this run. Do not re-gather. "
+        "Do not Slack, Gmail, or SOQL. Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
         "Read /tmp/plan-ai.json once. For a missing Peek, Read planner-digest.txt in this working directory. "
-        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
-        "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
-        "Keep every other peek, rank, and gus row. Leave todayPlan as []. Do not write slack or mail. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. "
+        "A missing summary means peeks.<caseNumber>.summary is empty. Write that summary from the "
+        "case's ## block, 4-8 sentences. Keep every other peek, rank, and gus row. "
+        "Keep todayPlan. If /tmp/plan-today.json has a todayPlan array, copy that array through. "
+        "If plan-ai.json already has todayPlan rows, keep those rows. Never replace todayPlan with []. "
+        "Do not write slack or mail. "
         "If the digest has a ## lap-mail block, the gus row label includes that LAP case number. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
         + lines
@@ -13457,9 +13459,11 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             for f in fails
         )
         needs_today = any(re.search(r"FAIL today:", f) for f in fails)
+        today_fails = [f for f in fails if re.search(r"FAIL today:", f)]
         try:
             if needs_analysis or not needs_today:
                 run_cli(prompt=repair_plan_prompt(fails), timeout_sec=4 * 60)
+                merge_today_plan_file()
             if needs_today:
                 try:
                     pathlib.Path("/tmp/plan-today.json").unlink()
@@ -13468,9 +13472,10 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
                 run_cli(
                     prompt=(
                         TODAY_PLAN_SYSTEM
-                        + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
-                        "Write only /tmp/plan-today.json. Do not drop a required row.\n"
-                        + "\n".join(fails)
+                        + "\n\nSelf-check failed on Today's plan. Rewrite the full todayPlan. "
+                        "Write only /tmp/plan-today.json. Do not drop a required row. "
+                        "Do not edit Peek or /tmp/plan-ai.json.\n"
+                        + "\n".join(today_fails)
                         + "\n\n"
                         + today_plan_user_prompt()
                     ),
