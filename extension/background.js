@@ -6,8 +6,6 @@ const PORT_END = 8799;
 const LEAD_MS = 10 * 60 * 1000;
 const LOGOUT_LEAD_MS = 30 * 60 * 1000;
 const LOGOUT_GRACE_MS = 12 * 60 * 60 * 1000;
-const LOGOUT_NAG_MS = 60 * 60 * 1000;
-const LOGOUT_REPEAT_MS = 2 * 60 * 1000;
 const SNOOZE_MIN = 5;
 const ALARM_SYNC = "edp-sync";
 const ALARM_OMNI = "edp-omni";
@@ -619,30 +617,33 @@ async function ackLogout() {
   await chrome.alarms.clear("edp-logout-pending");
 }
 
+function nativeMessage(payload) {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, (res) => {
+        const err = chrome.runtime.lastError;
+        resolve(err ? null : res || null);
+      });
+    } catch (_) {
+      resolve(null);
+    }
+  });
+}
+
 async function fireLogoutPending(end) {
   const key = String(end || "");
   const now = Date.now();
   if (!end || now < end - LOGOUT_LEAD_MS || now >= end + LOGOUT_GRACE_MS) return;
-  const stored = await chrome.storage.local.get([
-    "snapshot",
-    "edpLogoutAck",
-    "edpLogoutPostedAt",
-    "edpLogoutPostedFor"
-  ]);
+  const stored = await chrome.storage.local.get(["snapshot", "edpLogoutAck"]);
   if (stored.edpLogoutAck === key) return;
-  const same = stored.edpLogoutPostedFor === key;
-  const posted = same ? Number(stored.edpLogoutPostedAt) || 0 : 0;
-  if (same && now > end + LOGOUT_NAG_MS) return;
-  if (posted && now - posted < LOGOUT_REPEAT_MS) return;
   const pending = (stored.snapshot && stored.snapshot.pending) || {};
-  const created = await showPlannerNote(
-    "logout",
-    "30 Minutes Before Logout",
-    pendingLine(pending),
-    [{ title: "OK" }]
-  );
-  if (!created) return;
-  await chrome.storage.local.set({ edpLogoutPostedAt: now, edpLogoutPostedFor: key });
+  const res = await nativeMessage({
+    cmd: "logout-alert",
+    title: "30 Minutes Before Logout",
+    message: pendingLine(pending),
+    key: key
+  });
+  if (res && res.acked) await ackLogout();
 }
 
 async function scheduleLogoutPending(snap) {
