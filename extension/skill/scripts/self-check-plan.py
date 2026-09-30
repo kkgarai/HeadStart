@@ -171,6 +171,17 @@ def _check_model_rules(data: dict, gather: dict, fails: list[str]) -> None:
                 peeks = ai["peeks"]
         except (OSError, json.JSONDecodeError, TypeError):
             peeks = {}
+    ai_peeks: dict = {}
+    try:
+        ai = json.loads(pathlib.Path("/tmp/plan-ai.json").read_text(encoding="utf-8"))
+        if isinstance(ai, dict) and isinstance(ai.get("peeks"), dict):
+            ai_peeks = ai["peeks"]
+    except (OSError, json.JSONDecodeError, TypeError):
+        ai_peeks = {}
+    try:
+        live = _load_sanitize().live_owned_case_numbers()
+    except Exception:
+        live = None
     missing = []
     for row in gather.get("cases") or []:
         if not isinstance(row, dict):
@@ -178,8 +189,18 @@ def _check_model_rules(data: dict, gather: dict, fails: list[str]) -> None:
         num = str(row.get("caseNumber") or row.get("CaseNumber") or "").strip()
         if not num:
             continue
+        digits = re.sub(r"\D", "", num)
+        if isinstance(live, set) and live and num not in live and digits not in live:
+            continue
         peek = peeks.get(num) if isinstance(peeks.get(num), dict) else {}
+        if not peek and digits:
+            peek = peeks.get(digits) if isinstance(peeks.get(digits), dict) else {}
         summary = str(peek.get("summary") or "").strip()
+        if not summary:
+            alt = ai_peeks.get(num) if isinstance(ai_peeks.get(num), dict) else {}
+            if not alt and digits:
+                alt = ai_peeks.get(digits) if isinstance(ai_peeks.get(digits), dict) else {}
+            summary = str(alt.get("summary") or "").strip()
         if not summary:
             summary = _summary_on_case_row(data, num)
         if not summary:

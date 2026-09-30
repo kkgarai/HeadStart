@@ -5899,6 +5899,7 @@ def _replace_inbox_section(data: dict, title_re: str, payload: dict) -> None:
 
 def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
     apply_activity_file(data)
+    merge_today_plan_file()
     path = pathlib.Path("/tmp/plan-ai.json")
     try:
         if not path.is_file() or path.stat().st_mtime < (started_epoch - 2):
@@ -6111,13 +6112,15 @@ def ensure_open_plan_row() -> None:
 def repair_plan_prompt(fails: list[str]) -> str:
     lines = "\n".join("- " + f for f in fails[:12])
     return (
-        "The page did not publish. These are the only blockers. Find a way through them "
-        "from the files already on disk. Do not re-gather. Do not Slack, Gmail, or SOQL. "
-        "Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
+        "The page did not publish. Fix these blockers in this run. Do not re-gather. "
+        "Do not Slack, Gmail, or SOQL. Do not Read /tmp/plan.json or /tmp/planner-gather.json. "
         "Read /tmp/plan-ai.json once. For a missing Peek, Read planner-digest.txt in this working directory. "
-        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. Write "
-        "peeks.<caseNumber>.summary as 4-8 sentences from that case's thread. "
-        "Keep every other peek, rank, and gus row. Leave todayPlan as []. Do not write slack or mail. "
+        "If it lists parts, Read every part once, in order. Do not Read /tmp/planner-digest.txt. "
+        "A missing summary means peeks.<caseNumber>.summary is empty. Write that summary from the "
+        "case's ## block, 4-8 sentences. Keep every other peek, rank, and gus row. "
+        "Keep todayPlan. If /tmp/plan-today.json has a todayPlan array, copy that array through. "
+        "If plan-ai.json already has todayPlan rows, keep those rows. Never replace todayPlan with []. "
+        "Do not write slack or mail. "
         "If the digest has a ## lap-mail block, the gus row label includes that LAP case number. "
         "Write the complete /tmp/plan-ai.json again. Then stop.\n"
         + lines
@@ -9098,8 +9101,8 @@ def omni_alert_message(omni_status: str, assembled_now: str) -> str:
 OMNI_SHIFT_GAP = timedelta(hours=3)
 OMNI_KIND_TOKENS = {
     "casework": frozenset({"case", "casework"}),
-    "chat": frozenset({"chat", "live"}),
-    "messaging": frozenset({"messaging", "message"}),
+    "chat": frozenset({"chat", "live", "messaging", "message"}),
+    "messaging": frozenset({"messaging", "message", "chat", "live"}),
     "voice": frozenset({"voice"}),
     "lunch": frozenset({"lunch", "meal"}),
     "break": frozenset({"break"}),
@@ -9543,7 +9546,8 @@ def omni_in_adherence(label: str, kinds: list[str]) -> bool:
 
     In adherence = Screen Sharing (any block, never OOA) or the status for
     the Assembled block covering now. Work: Available* / Chat Online that
-    includes that channel (combos count). Lunch / Break / Dinner: that meal
+    includes that channel (combos count). Chat and Messaging are the same
+    channel. Lunch / Break / Dinner: that meal
     label, or Offline / no Omni row / End of Work. Busy is never in
     adherence on a work block.
     """
@@ -13020,6 +13024,81 @@ def shift_logout_ms(data: dict, now: datetime | None = None) -> int:
     return int(end.timestamp() * 1000)
 
 
+_CUSTOMER_WAIT_RE = re.compile(
+    r"solution provided|need(?:s)? more information|\bnmi\b",
+    re.I,
+)
+_CHATTER_NOTICE_RE = re.compile(
+    r"chatter-notifications|mentioned you in a (?:post|comment)|also commented on a post",
+    re.I,
+)
+_CLOSED_LAP_RE = re.compile(r"closed\s*-\s*executed|\bstatus is closed\b", re.I)
+_SLACK_WAITING_ON_THEM_RE = re.compile(
+    r"you can close|no reply|no answer yet|has not replied|have no answer",
+    re.I,
+)
+_LAP_NUM_RE = re.compile(r"(?:LAP\s+|gusmail-|lap-)(\d{5,})", re.I)
+
+
+def _logout_blob(it: dict) -> str:
+    return " ".join(str(it.get(k) or "") for k in ("id", "label", "detail", "status"))
+
+
+def _logout_follow_count(items: list) -> int:
+    """Solution Provided and Need More Information are waiting on the customer."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _CUSTOMER_WAIT_RE.search(_logout_blob(it)):
+            continue
+        n += 1
+    return n
+
+
+def _logout_mail_count(items: list) -> int:
+    """Chatter notification mail is not an email still waiting on a reply."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _CHATTER_NOTICE_RE.search(_logout_blob(it)):
+            continue
+        n += 1
+    return n
+
+
+def _logout_slack_count(items: list) -> int:
+    """A thread you already closed, or that is waiting on them, is not still open."""
+    n = 0
+    for it in items:
+        if it.get("done") is True:
+            continue
+        if _SLACK_WAITING_ON_THEM_RE.search(str(it.get("detail") or "")):
+            continue
+        n += 1
+    return n
+
+
+def _logout_gus_count(items: list) -> int:
+    """One open LAP. Closed and repeated rows for the same LAP count once, as closed."""
+    state: dict[str, str] = {}
+    for it in items:
+        if it.get("done") is True:
+            continue
+        blob = _logout_blob(it)
+        laps = _LAP_NUM_RE.findall(blob)
+        if not laps:
+            continue
+        closed = bool(_CLOSED_LAP_RE.search(blob))
+        for num in laps:
+            if closed or state.get(num) == "closed":
+                state[num] = "closed"
+            elif num not in state:
+                state[num] = "open"
+    return sum(1 for value in state.values() if value == "open")
+
+
 def snapshot_payload() -> dict:
     data = load_live_briefing()
     remind = []
@@ -13074,17 +13153,16 @@ def snapshot_payload() -> dict:
         for grp in sec.get("groups") or []:
             if isinstance(grp, dict):
                 bag.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
-        n = sum(1 for it in bag if it.get("done") is not True)
         if title.startswith("slack"):
-            pending["slack"] += n
+            pending["slack"] += _logout_slack_count(bag)
         elif re.search(r"\b(mail|email|gmail)\b", title):
-            pending["mail"] += n
+            pending["mail"] += _logout_mail_count(bag)
         elif "follow-up" in title or "follow up" in title:
-            pending["followUps"] += n
+            pending["followUps"] += _logout_follow_count(bag)
         elif "needs us now" in title or "needs you now" in title:
-            pending["needsNow"] += n
+            pending["needsNow"] += sum(1 for it in bag if it.get("done") is not True)
         elif title.startswith("gus"):
-            pending["gus"] += n
+            pending["gus"] += _logout_gus_count(bag)
     summary_lines = ["30 Minutes Until Logout"]
     if pending["needsNow"]:
         summary_lines.append(str(pending["needsNow"]) + " Needs Us Now")
@@ -13456,9 +13534,11 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
             for f in fails
         )
         needs_today = any(re.search(r"FAIL today:", f) for f in fails)
+        today_fails = [f for f in fails if re.search(r"FAIL today:", f)]
         try:
             if needs_analysis or not needs_today:
                 run_cli(prompt=repair_plan_prompt(fails), timeout_sec=4 * 60)
+                merge_today_plan_file()
             if needs_today:
                 try:
                     pathlib.Path("/tmp/plan-today.json").unlink()
@@ -13467,9 +13547,10 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
                 run_cli(
                     prompt=(
                         TODAY_PLAN_SYSTEM
-                        + "\n\nSelf-check failed. Fix every line. Rewrite the full todayPlan. "
-                        "Write only /tmp/plan-today.json. Do not drop a required row.\n"
-                        + "\n".join(fails)
+                        + "\n\nSelf-check failed on Today's plan. Rewrite the full todayPlan. "
+                        "Write only /tmp/plan-today.json. Do not drop a required row. "
+                        "Do not edit Peek or /tmp/plan-ai.json.\n"
+                        + "\n".join(today_fails)
                         + "\n\n"
                         + today_plan_user_prompt()
                     ),
