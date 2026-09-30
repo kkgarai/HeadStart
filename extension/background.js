@@ -611,7 +611,7 @@ async function showPlannerNote(id, title, message, buttons) {
 
 async function ackLogout() {
   const stored = await chrome.storage.local.get(["snapshot"]);
-  const end = Number(stored.snapshot && stored.snapshot.shiftEndMs) || 0;
+  const end = await rememberedShiftEnd(stored.snapshot);
   if (!end) return;
   await chrome.storage.local.set({ edpLogoutAck: String(end) });
   await chrome.alarms.clear("edp-logout-pending");
@@ -628,6 +628,16 @@ function nativeMessage(payload) {
       resolve(null);
     }
   });
+}
+
+async function rememberedShiftEnd(snap) {
+  const end = Number(snap && snap.shiftEndMs) || 0;
+  if (end) {
+    await chrome.storage.local.set({ edpShiftEndMs: end });
+    return end;
+  }
+  const stored = await chrome.storage.local.get(["edpShiftEndMs"]);
+  return Number(stored.edpShiftEndMs) || 0;
 }
 
 async function fireLogoutPending(end) {
@@ -647,7 +657,7 @@ async function fireLogoutPending(end) {
 }
 
 async function scheduleLogoutPending(snap) {
-  const end = Number(snap && snap.shiftEndMs) || 0;
+  const end = await rememberedShiftEnd(snap);
   if (!end) return;
   const when = end - LOGOUT_LEAD_MS;
   const now = Date.now();
@@ -744,7 +754,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
   if (alarm.name === "edp-logout-pending") {
     const stored = await chrome.storage.local.get(["snapshot"]);
-    const end = Number(stored.snapshot && stored.snapshot.shiftEndMs) || 0;
+    const end = await rememberedShiftEnd(stored.snapshot);
     await fireLogoutPending(end);
     return;
   }

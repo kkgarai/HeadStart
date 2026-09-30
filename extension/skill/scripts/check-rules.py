@@ -56,6 +56,7 @@ def main() -> int:
     publish_rules(gate, sanit)
     slack_name_rules(gate, sanit)
     lookback_rules(gate, bridge)
+    plan_stays_through_logout(gate, bridge)
     today_plan_rules(gate, plan)
     peek_rules(gate, plan)
 
@@ -226,6 +227,30 @@ def lookback_rules(gate: Gate, bridge) -> None:
         "Slack search date is the day before the cutoff",
         after == (cutoff.date() - bridge.timedelta(days=1)).strftime("%Y-%m-%d"),
         after,
+    )
+
+
+def plan_stays_through_logout(gate: Gate, bridge) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime.now(tz)
+    morning = now.replace(hour=9, minute=25, second=0, microsecond=0)
+    if morning > now:
+        morning = now
+    gate.check(
+        "a morning plan is still current at logout",
+        bridge.briefing_is_today(
+            {"generatedAt": morning.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
+        ),
+    )
+    yesterday = now - bridge.timedelta(days=1)
+    gate.check(
+        "yesterday's plan is not current",
+        not bridge.briefing_is_today(
+            {"generatedAt": yesterday.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
+        ),
     )
 
 

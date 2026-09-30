@@ -8225,12 +8225,17 @@ def plan_generated_at(data: dict) -> datetime | None:
 
 
 def briefing_is_today(data: dict) -> bool:
-    """A plan older than 6 hours is not shown. No run time means there is no plan."""
+    """A plan from today's shift date stays up through that day.
+
+    A morning run must still be current at logout. No run time means there is no plan.
+    """
     generated = plan_generated_at(data)
     if generated is None:
         return False
-    age = datetime.now(generated.tzinfo) - generated
-    return timedelta(minutes=-5) <= age <= PLAN_FRESH
+    now = datetime.now(generated.tzinfo)
+    if generated - now > timedelta(minutes=5):
+        return False
+    return generated.date() == now.date()
 
 
 def page_generation_path() -> pathlib.Path:
