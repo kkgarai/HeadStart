@@ -48,6 +48,7 @@ def main() -> int:
     plan = load("edp_plan", "self-check-plan.py")
 
     version_strings(gate)
+    toolbar_rules(gate)
     python_parses(gate)
     host_versions_match(gate)
     omni_rules(gate, bridge)
@@ -64,6 +65,30 @@ def main() -> int:
         return 1
     print(f"{gate.passed} rules held.")
     return 0
+
+
+def toolbar_rules(gate: Gate) -> None:
+    """Help and Feedback belong on the extension bar, not above the calendar."""
+    page = (ROOT / "extension" / "skill" / "page" / "template.html").read_text(encoding="utf-8")
+    start = page.find('<div class="toolbar">')
+    end = page.find('<div id="app">')
+    toolbar = page[start:end] if start >= 0 and end > start else ""
+    gate.check("planner toolbar exists", bool(toolbar))
+    gate.check(
+        "Feedback stays off the planner toolbar",
+        "feedback-link" not in toolbar and ">Feedback<" not in toolbar,
+    )
+    gate.check(
+        "Help stays off the planner toolbar",
+        'id="help-btn"' not in toolbar and ">Help<" not in toolbar,
+    )
+    gate.check(
+        "Refresh Calendar stays on the planner toolbar",
+        'id="refresh-cal"' in toolbar,
+    )
+    panel = (ROOT / "extension" / "panel.html").read_text(encoding="utf-8")
+    gate.check("Feedback stays on the extension bar", 'id="feedback-btn"' in panel)
+    gate.check("Help stays on the extension bar", 'id="help-btn"' in panel)
 
 
 def version_strings(gate: Gate) -> None:
