@@ -2694,6 +2694,16 @@ ASK_STOP = {
 }
 
 
+def _stale_plan_line(data: dict | None) -> str:
+    """Start-page line. A plan older than 6 hours says when it was run."""
+    generated = plan_generated_at(data) if isinstance(data, dict) else None
+    if generated is None or briefing_is_today(data or {}):
+        return "A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan."
+    hour = generated.hour % 12 or 12
+    when = f"{generated.strftime('%A')}, {generated.strftime('%b')} {generated.day} · {hour}:{generated.strftime('%M %p')}"
+    return f"The last Run Planner was more than 6 hours ago ({when}). Run Planner when you want a fresh plan."
+
+
 def unpublished_page_html() -> bytes:
     html = """<!DOCTYPE html>
 <html lang="en">
@@ -2792,7 +2802,7 @@ def unpublished_page_html() -> bytes:
     <main>
       <h1>No plan for today yet</h1>
       <p class="ver">Version: __EDP_VERSION__</p>
-      <p>A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan.</p>
+      <p>__EDP_STALE__</p>
       <p class="copy">© 2026 Kiran Kumar Garai &lt;kgarai@salesforce.com&gt;. Skill authored by Kiran Kumar Garai.</p>
     </main>
   </div>
@@ -2849,11 +2859,19 @@ def unpublished_page_html() -> bytes:
 </html>
 """
     version = packed_extension_version() or ""
-    return html.replace("__EDP_VERSION__", version).encode("utf-8")
+    note = "A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan."
+    try:
+        prior = load_page_briefing()
+    except Exception:
+        prior = None
+    if isinstance(prior, dict):
+        note = _stale_plan_line(prior)
+    return html.replace("__EDP_VERSION__", version).replace("__EDP_STALE__", note).encode("utf-8")
 
 
 def unpublished_snapshot() -> dict:
-    return {
+    """Start-page status. Logout still receives the shift end from the last plan."""
+    out = {
         "ok": True,
         "unpublished": True,
         "needYou": 0,
@@ -2862,6 +2880,23 @@ def unpublished_snapshot() -> dict:
         "page": "/current.html",
         "briefing": "/briefing.json",
     }
+    try:
+        data = load_page_briefing()
+    except Exception:
+        return out
+    if not isinstance(data, dict):
+        return out
+    out["stale"] = not briefing_is_today(data)
+    out["generatedAt"] = data.get("generatedAt") or ""
+    out["stamp"] = data.get("stamp") or ""
+    out["timezone"] = data.get("timezone") or ""
+    out["shiftEnd"] = data.get("shiftEnd") or ""
+    try:
+        now, _ = shift_now(data)
+        out["shiftEndMs"] = shift_logout_ms(data, now)
+    except Exception:
+        out["shiftEndMs"] = 0
+    return out
 
 
 BRIEFING_SCRIPT_START = '<script type="application/json" id="briefing-data">'
@@ -8225,17 +8260,12 @@ def plan_generated_at(data: dict) -> datetime | None:
 
 
 def briefing_is_today(data: dict) -> bool:
-    """A plan from today's shift date stays up through that day.
-
-    A morning run must still be current at logout. No run time means there is no plan.
-    """
+    """A plan older than 6 hours is not the current page. No run time means there is no plan."""
     generated = plan_generated_at(data)
     if generated is None:
         return False
-    now = datetime.now(generated.tzinfo)
-    if generated - now > timedelta(minutes=5):
-        return False
-    return generated.date() == now.date()
+    age = datetime.now(generated.tzinfo) - generated
+    return timedelta(minutes=-5) <= age <= PLAN_FRESH
 
 
 def page_generation_path() -> pathlib.Path:

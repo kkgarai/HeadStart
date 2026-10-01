@@ -236,20 +236,18 @@ def plan_stays_through_logout(gate: Gate, bridge) -> None:
 
     tz = ZoneInfo("America/Los_Angeles")
     now = datetime.now(tz)
-    morning = now.replace(hour=9, minute=25, second=0, microsecond=0)
-    if morning > now:
-        morning = now
+    recent = now - bridge.timedelta(minutes=30)
     gate.check(
-        "a morning plan is still current at logout",
+        "a plan from the last half hour is current",
         bridge.briefing_is_today(
-            {"generatedAt": morning.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
+            {"generatedAt": recent.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
         ),
     )
-    yesterday = now - bridge.timedelta(days=1)
+    old = now - bridge.timedelta(hours=7)
     gate.check(
-        "yesterday's plan is not current",
+        "a plan older than 6 hours is not the current page",
         not bridge.briefing_is_today(
-            {"generatedAt": yesterday.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
+            {"generatedAt": old.strftime("%Y%m%dT%H%M%S"), "timezone": "America/Los_Angeles"}
         ),
     )
 
