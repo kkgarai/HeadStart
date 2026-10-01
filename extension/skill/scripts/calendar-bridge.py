@@ -10644,10 +10644,32 @@ def is_opus_model(model_id: str) -> bool:
     return bool(re.search(r"opus", (model_id or "").lower()))
 
 
-def _needs_adaptive_thinking(model_id: str) -> bool:
-    """Opus 5, Sonnet 5, and Fable reject thinking.type.enabled. They want adaptive."""
-    low = (model_id or "").lower()
-    return bool(re.search(r"(?:opus|sonnet|fable)[-_.]?5(?:\b|[-_.\d])", low))
+_THINKING_LADDER = ("enabled", "adaptive", "plain")
+
+
+def _thinking_shapes_after(shape: str) -> list[str]:
+    """Next shapes after the gateway rejects this one. Same list for every model."""
+    try:
+        idx = _THINKING_LADDER.index(shape)
+    except ValueError:
+        return ["adaptive", "plain"]
+    return list(_THINKING_LADDER[idx + 1 :])
+
+
+def _remember_model_shape(model_id: str, shape: str) -> None:
+    if not model_id or shape not in _THINKING_LADDER:
+        return
+    with _MODEL_SHAPE_LOCK:
+        _MODEL_SHAPE[model_id] = shape
+
+
+def _client_thinking_shape(payload: dict) -> str:
+    thinking = payload.get("thinking")
+    if isinstance(thinking, dict):
+        kind = str(thinking.get("type") or "")
+        if kind in ("enabled", "adaptive"):
+            return kind
+    return "plain"
 
 
 def fetch_sidecar_models(chosen: str) -> tuple[str, str]:
@@ -10736,39 +10758,30 @@ def _probe_gateway_message(token: str, model_id: str, shape: str) -> tuple[int, 
 
 
 def _rejects_planner_thinking(body: str) -> bool:
-    """The model refused the thinking switch the planner sends. Do not try another shape."""
+    """The gateway refused thinking.type.enabled. The next shape is tried for any model."""
     low = (body or "").lower()
     return "thinking.type.enabled" in low and "not supported" in low
 
 
 def discover_model_shape(token: str, model_id: str) -> str:
-    """Learn which thinking shape this model accepts. Opus 5 and Sonnet 5 use adaptive."""
+    """Learn the thinking shape from the gateway. A new model uses the same ladder."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
-    if known:
+    if known and known != "no":
         return known
-    first = "adaptive" if _needs_adaptive_thinking(model_id) else "enabled"
-    status, body = _probe_gateway_message(token, model_id, first)
-    if status in (401, 403):
-        raise RuntimeError("Gateway rejected the token while checking models")
-    shape = "no"
-    if status == 200:
-        shape = first
-    elif first == "enabled" and _rejects_planner_thinking(body):
-        status, _body = _probe_gateway_message(token, model_id, "adaptive")
+    for shape in _THINKING_LADDER:
+        status, body = _probe_gateway_message(token, model_id, shape)
         if status in (401, 403):
             raise RuntimeError("Gateway rejected the token while checking models")
         if status == 200:
-            shape = "adaptive"
-    elif not _rejects_planner_thinking(body):
-        status, _body = _probe_gateway_message(token, model_id, "plain")
-        if status in (401, 403):
-            raise RuntimeError("Gateway rejected the token while checking models")
-        if status == 200:
-            shape = "plain"
-    with _MODEL_SHAPE_LOCK:
-        _MODEL_SHAPE[model_id] = shape
-    return shape
+            _remember_model_shape(model_id, shape)
+            return shape
+        if status == 0:
+            break
+        if shape == "enabled" and not _rejects_planner_thinking(body):
+            continue
+    _remember_model_shape(model_id, "plain")
+    return "plain"
 
 
 def _prepare_gateway_message(payload: dict) -> None:
@@ -10776,14 +10789,12 @@ def _prepare_gateway_message(payload: dict) -> None:
     if forced:
         payload["model"] = forced
     model = str(payload.get("model") or "")
-    if _needs_adaptive_thinking(model):
-        _apply_planner_shape(payload, "adaptive", _planner_effort(model, payload))
-        return
     with _MODEL_SHAPE_LOCK:
-        shape = _MODEL_SHAPE.get(model) or "plain"
+        shape = _MODEL_SHAPE.get(model) or ""
     if shape == "no":
         shape = "plain"
-    _apply_planner_shape(payload, shape, _planner_effort(model, payload))
+    if shape in _THINKING_LADDER:
+        _apply_planner_shape(payload, shape, _planner_effort(model, payload))
 
 
 def plan_force_model() -> str:
@@ -11388,10 +11399,7 @@ def plan_fatal_message(line: str) -> str:
     if "error doing the fallback" in low and "litellm" in low:
         return "OpenCode LiteLLM fallback failed. Run Planner again."
     if "thinking.type.enabled" in low and "not supported" in low:
-        return (
-            "This model is fine. The request used the old thinking flag. "
-            "Opus 5 and Sonnet 5 need adaptive thinking. Update Claude Code, then run again."
-        )
+        return ""
     return ""
 
 
@@ -13789,6 +13797,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
+        payload = None
+        retry_thinking = False
         if self.command == "POST" and raw:
             try:
                 payload = json.loads(raw)
@@ -13797,6 +13807,7 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(payload, dict) and path.rstrip("/").endswith("messages"):
                 _prepare_gateway_message(payload)
                 raw = json.dumps(payload).encode("utf-8")
+                retry_thinking = True
         headers = {}
         for key in (
             "x-api-key",
@@ -13814,24 +13825,43 @@ class Handler(BaseHTTPRequestHandler):
         key = headers.get("x-api-key") or headers.get("X-Api-Key") or ""
         if key and not headers.get("authorization") and not headers.get("Authorization"):
             headers["Authorization"] = "Bearer " + key
-        if raw and self.command != "GET":
-            headers["Content-Length"] = str(len(raw))
-        req = urllib.request.Request(
-            upstream,
-            data=raw if self.command != "GET" else None,
-            method=self.command,
-            headers=headers,
-        )
-        try:
-            resp = urllib.request.urlopen(req, timeout=PLAN_TIMEOUT_SEC, context=ssl_ctx())
-            status = getattr(resp, "status", 200)
-            resp_headers = resp.headers
-            body_iter = resp
-        except urllib.error.HTTPError as exc:
-            status = exc.code
-            resp_headers = exc.headers
-            body_iter = exc
-        self.send_response(status)
+
+        def open_upstream(body: bytes):
+            hdrs = dict(headers)
+            if body and self.command != "GET":
+                hdrs["Content-Length"] = str(len(body))
+            req = urllib.request.Request(
+                upstream,
+                data=body if self.command != "GET" else None,
+                method=self.command,
+                headers=hdrs,
+            )
+            try:
+                resp = urllib.request.urlopen(req, timeout=PLAN_TIMEOUT_SEC, context=ssl_ctx())
+                return getattr(resp, "status", 200) or 200, resp.headers, resp, b""
+            except urllib.error.HTTPError as exc:
+                try:
+                    err = exc.read()
+                except Exception:
+                    err = b""
+                return int(exc.code or 0), exc.headers, None, err
+
+        status, resp_headers, body_iter, err_body = open_upstream(raw)
+        if retry_thinking and isinstance(payload, dict) and _rejects_planner_thinking(err_body.decode("utf-8", "replace")):
+            model = str(payload.get("model") or "")
+            shape = _client_thinking_shape(payload)
+            with _MODEL_SHAPE_LOCK:
+                known = _MODEL_SHAPE.get(model) or ""
+            if known in _THINKING_LADDER:
+                shape = known
+            for nxt in _thinking_shapes_after(shape):
+                _apply_planner_shape(payload, nxt, _planner_effort(model, payload))
+                status, resp_headers, body_iter, err_body = open_upstream(json.dumps(payload).encode("utf-8"))
+                if not _rejects_planner_thinking(err_body.decode("utf-8", "replace")):
+                    if status and status < 400:
+                        _remember_model_shape(model, nxt)
+                    break
+        self.send_response(status or 502)
         for key, val in (resp_headers or {}).items():
             if key.lower() in {
                 "content-length",
@@ -13844,6 +13874,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, val)
         self.end_headers()
         try:
+            if body_iter is None:
+                if err_body:
+                    self.wfile.write(err_body)
+                return
             while True:
                 chunk = body_iter.read(8192)
                 if not chunk:
