@@ -548,12 +548,14 @@ def is_slack_dm(item: dict) -> bool:
     cid = str(item.get("channelId") or item.get("slackChannel") or "").strip()
     if cid.startswith("D"):
         return True
+    if cid.startswith(("C", "G")):
+        return False
     url = str(item.get("slackUrl") or item.get("permalink") or "")
     if re.search(r"/archives/D[A-Z0-9]+", url, re.I):
         return True
-    if re.search(r"\(DM\)", str(item.get("label") or ""), re.I):
-        return True
-    return bool(re.search(r"\bDM\b", str(item.get("channel") or ""), re.I))
+    if re.search(r"/archives/[CG][A-Z0-9]+", url, re.I):
+        return False
+    return bool(re.search(r"\(DM\)", str(item.get("label") or ""), re.I))
 
 
 def _dm_label_who(label: object) -> str:
@@ -569,38 +571,48 @@ def _dm_label_snippet(item: dict) -> str:
     return _norm_person(item.get("snippet") or "")[:120]
 
 
+_SLACK_NOT_A_PERSON = re.compile(
+    r"^(group\s+)?dms?|im|mpim|direct message|group dm|candidate|slack$",
+    re.I,
+)
+
+
+def slack_copy_is_placeholder(text: object) -> bool:
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    return not raw or bool(re.fullmatch(r"candidate|---+|—|–|-", raw, re.I))
+
+
+def slack_person_name(name: object) -> str:
+    n = _norm_person(name)
+    n = re.sub(r"\s*\(ID:.*$", "", n).strip()
+    n = re.sub(r"^(direct message with|dm with|im with)\s+", "", n, flags=re.I)
+    if not n or _SLACK_NOT_A_PERSON.fullmatch(n):
+        return ""
+    return n
+
+
 def slack_dm_peer(item: dict, data: dict | None) -> str:
-    """Other human in a DM. Never this engineer."""
+    """Other human in a DM. Never this engineer, and never the previous title."""
     people: list[str] = []
     seen: set[str] = set()
 
     def add(name: object) -> None:
-        n = _norm_person(name)
-        n = re.sub(r"\s*\(ID:.*$", "", n).strip()
-        n = re.sub(
-            r"^(direct message with|dm with|im with)\s+",
-            "",
-            n,
-            flags=re.I,
-        )
-        if not n or re.fullmatch(r"DM|IM|MPI?M|Direct Message", n, re.I):
-            return
-        if _is_self_person(n, data) or _SLACK_BOT_WHO.search(n):
-            return
-        key = n.lower()
-        if key in seen:
-            return
-        seen.add(key)
-        people.append(n)
+        raw = _norm_person(name)
+        parts = [p.strip() for p in raw.split(",")] if "," in raw else [raw]
+        for part in parts:
+            n = slack_person_name(part)
+            if not n or _is_self_person(n, data) or _SLACK_BOT_WHO.search(n):
+                continue
+            key = n.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            people.append(n)
 
     for name in people_in_slack_text(item.get("openedClip") or ""):
         add(name)
-    add(item.get("peer"))
     add(item.get("from"))
-    add(item.get("channel"))
-    blob = " ".join(
-        str(item.get(k) or "") for k in ("detail", "label", "snippet")
-    )
+    blob = " ".join(str(item.get(k) or "") for k in ("detail", "label", "snippet"))
     mgr = _norm_person((data or {}).get("manager"))
     if mgr:
         first = mgr.split()[0]
@@ -609,35 +621,57 @@ def slack_dm_peer(item: dict, data: dict | None) -> str:
     return ", ".join(people[:3])
 
 
+def slack_card_header(item: dict, data: dict | None) -> str:
+    """Person or channel only. The message stays in Peek."""
+    who = slack_person_name(item.get("from") or "") or slack_dm_peer(item, data)
+    channel = slack_channel_title(item.get("channel") or "")
+    if is_slack_dm(item):
+        return f"{who or 'DM'} (DM)"
+    if channel and channel.lower() not in {"group dm", "dm"}:
+        shown = channel if channel.startswith("#") else f"#{channel}"
+        if who:
+            return f"{who} — {shown}"[:120]
+        return shown[:120]
+    return (who or "Slack")[:120]
+
+
 def stamp_slack_dm_label(item: dict, data: dict | None) -> None:
-    """Title a DM with the counterpart. Search From is often this engineer."""
+    """Title a DM with the counterpart. The message is not part of the title."""
     if not isinstance(item, dict) or item.get("gusBot") is True or not is_slack_dm(item):
         return
     peer = slack_dm_peer(item, data)
-    snippet = _dm_label_snippet(item)
-    current = _dm_label_who(item.get("label"))
     if peer:
         item["peer"] = peer
-        who = peer
-    elif current and not _is_self_person(current, data) and current.upper() != "DM":
-        who = current
-    else:
-        who = "DM"
-    label = f"{who} (DM)"
-    if snippet:
-        label = f"{label} — {snippet}"
-    item["label"] = label[:160]
+    elif item.get("peer"):
+        item["peer"] = slack_person_name(str(item.get("peer")).split(",")[0]) or ""
+    item["label"] = slack_card_header(item, data)
 
 
 def relabel_slack_dms(data: dict) -> None:
     if not isinstance(data, dict):
         return
-    for _sec, it in _walk_items(data):
-        if str(it.get("kind") or "").lower() == "slack" or is_slack_dm(it):
+
+    def one(it: dict) -> None:
+        if str(it.get("kind") or "").lower() != "slack" and not is_slack_dm(it):
+            return
+        if it.get("gusBot") is True:
+            return
+        if is_slack_dm(it):
             stamp_slack_dm_label(it, data)
+        else:
+            it["label"] = slack_card_header(it, data)
+        if slack_copy_is_placeholder(it.get("detail")):
+            it["detail"] = ""
+        if slack_copy_is_placeholder(it.get("summary")):
+            it.pop("summary", None)
+        if slack_copy_is_placeholder(it.get("snippet")):
+            it["snippet"] = ""
+
+    for _sec, it in _walk_items(data):
+        one(it)
     for row in data.get("slackCandidates") or []:
         if isinstance(row, dict):
-            stamp_slack_dm_label(row, data)
+            one(row)
 
 
 def _slack_id_parts(item_id: str) -> tuple[str, str]:

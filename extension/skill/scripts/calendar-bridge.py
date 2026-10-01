@@ -4113,14 +4113,12 @@ def _parse_slack_search(
         if file_m:
             raw_text = (raw_text + " " + file_m.group(1)).strip()
         text_clip = raw_text[:400] if keep_bots else raw_text[:120]
-        if cid.startswith("D") or re.search(r"\bDM\b", channel, re.I):
+        if cid.startswith("D"):
             label = "DM"
         else:
             shown = f"#{channel}" if channel else ""
             label = f"{who or 'Slack'} — {shown}" if shown else (who or "Slack")
             channel = shown or channel
-        if text_clip:
-            label = f"{label} — {text_clip}"
         if not url and cid:
             url = f"https://salesforce.enterprise.slack.com/archives/{cid}"
             if ts:
@@ -4131,7 +4129,7 @@ def _parse_slack_search(
             "id": ident,
             "kind": "slack",
             "label": label[:160],
-            "detail": "candidate",
+            "detail": "",
             "from": who,
             "snippet": text_clip,
             "slackUrl": url,
@@ -5722,12 +5720,17 @@ def _peek_is_raw(text: str) -> bool:
 def _model_peek_summary(it: dict) -> str:
     peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
     summary = str(peek.get("summary") or it.get("summary") or "").strip()
-    if _peek_is_raw(summary):
+    if _peek_is_raw(summary) or _sanitize_mod().slack_copy_is_placeholder(summary):
         summary = ""
     detail = str(it.get("detail") or "").strip()
     if summary:
         return summary[:900]
-    if detail and not _peek_is_raw(detail) and detail.lower() not in ("swarm thread", "sev-1 channel"):
+    if (
+        detail
+        and not _peek_is_raw(detail)
+        and not _sanitize_mod().slack_copy_is_placeholder(detail)
+        and detail.lower() not in ("swarm thread", "sev-1 channel")
+    ):
         return detail[:900]
     return ""
 
@@ -5833,6 +5836,35 @@ _UNLOADED_PEEK_RE = re.compile(
 )
 
 
+def _finish_slack_card(it: dict, data: dict) -> None:
+    """Header is the person or channel. Peek holds the message. Completed rows stay out."""
+    sanit = _sanitize_mod()
+    it["kind"] = "slack"
+    sanit.relabel_slack_dms({"sections": [{"title": "Slack", "items": [it]}], "name": data.get("name"), "manager": data.get("manager")})
+    if sanit.slack_copy_is_placeholder(it.get("detail")):
+        it["detail"] = ""
+    messages = _slack_peek_messages(str(it.get("openedClip") or ""))
+    snippet = str(it.get("snippet") or "").strip()
+    if sanit.slack_copy_is_placeholder(snippet):
+        snippet = ""
+        it["snippet"] = ""
+    if messages:
+        it["peek"] = {
+            "summary": messages[0]["text"][:500],
+            "chronology": [
+                {"when": row["when"], "who": row["who"], "kind": "slack", "text": row["text"][:500]}
+                for row in messages
+            ],
+        }
+    elif snippet:
+        it["peek"] = {"summary": snippet[:500]}
+    else:
+        peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
+        if sanit.slack_copy_is_placeholder(peek.get("summary")):
+            it.pop("peek", None)
+    it["detail"] = ""
+
+
 def _stamp_inbox_peeks(data: dict) -> None:
     """Keep a readable Slack or Mail message on the row. Sev-1 channels stay off the Slack card."""
     if not isinstance(data, dict):
@@ -5881,6 +5913,9 @@ def _stamp_inbox_peeks(data: dict) -> None:
             if isinstance(grp, dict):
                 rows.extend(it for it in (grp.get("items") or []) if isinstance(it, dict))
         for it in rows:
+            if is_slack:
+                _finish_slack_card(it, data)
+                continue
             summary = _model_peek_summary(it)
             if summary:
                 it["peek"] = {"summary": summary}
@@ -5888,13 +5923,7 @@ def _stamp_inbox_peeks(data: dict) -> None:
                 it.pop("peek", None)
             detail = str(it.get("detail") or "").strip()
             if _peek_is_raw(detail):
-                detail = ""
                 it["detail"] = ""
-            if is_slack and not detail and summary:
-                sentence = re.split(r"(?<=\.)\s", summary)[0].strip()
-                it["detail"] = sentence[:160]
-            if is_slack and not it.get("kind"):
-                it["kind"] = "slack"
             if is_mail and not it.get("kind"):
                 it["kind"] = "mail"
         if is_slack and not rows and not sec.get("groups") and not sec.get("items"):
@@ -5967,6 +5996,10 @@ def apply_ai_overlay(data: dict, started_epoch: float) -> dict:
                     overlay_items.extend(group.get("items") or [])
             for item in overlay_items:
                 if not isinstance(item, dict):
+                    continue
+                kind = str(item.get("kind") or "").lower()
+                ident = str(item.get("id") or "")
+                if kind in {"slack", "mail", "email", "gmail"} or ident.startswith(("slack-", "mail-")):
                     continue
                 num = re.sub(r"\D", "", str(item.get("caseNumber") or ""))
                 if len(num) < 6:
@@ -6533,7 +6566,7 @@ Slack:
 - Drop FYI, huddle over, and thanks that say they will update the customer.
 - Not opened = unread and still yours. Needs a reply = opened and the loop is still open.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
-- DM label is "{peer} (DM)". One card per person. One card per channel. One card per thread.
+- DM label is "{peer} (DM)". Channel label is the person and #channel. Do not put the message in the label or in detail. The message belongs in peek. One card per person. One card per channel. One card per thread.
 
 Mail:
 - Drop done:true.

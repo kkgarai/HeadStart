@@ -3997,6 +3997,29 @@
         if (update) bits.push(update);
         return bits.join(" · ");
       }
+      function slackHeaderLabel(item, sec) {
+        var label = String((item && item.label) || "");
+        if (!isSlackRow(item, sec)) return label;
+        var snip = String((item && item.snippet) || "").replace(/\s+/g, " ").trim();
+        var parts = label.split(" — ");
+        if (parts.length > 1) {
+          var tail = parts.slice(1).join(" — ").replace(/\s+/g, " ").trim();
+          if (/^candidate$/i.test(tail) || (snip && (tail === snip || snip.indexOf(tail.slice(0, 40)) === 0))) {
+            label = parts[0];
+          }
+        }
+        var bits = label.split(",").map(function (s) { return s.replace(/\s+/g, " ").trim(); }).filter(Boolean);
+        var seen = {};
+        var kept = [];
+        bits.forEach(function (bit) {
+          var key = bit.toLowerCase();
+          if (key === "group dm" || key === "dm" || key === "candidate" || seen[key]) return;
+          seen[key] = true;
+          kept.push(bit);
+        });
+        if (kept.length && kept.length < bits.length) label = kept.join(", ");
+        return label;
+      }
       function rowHtml(item, hot, sec) {
         var slackHref = slackLink(item);
         var compact = /^(later|touch|idle)$/.test(bandOf(sec));
@@ -4011,7 +4034,7 @@
             when = isSlackRow(item, sec) ? "Slack" : (isMailRow(item, sec) ? "Mail" : (item.kind === "break" ? "Pause" : "—"));
           }
         }
-        var rawLabel = item.gusBot ? plainGus(item.label) : item.label;
+        var rawLabel = item.gusBot ? plainGus(item.label) : slackHeaderLabel(item, sec);
         var labelText = prettyName(isPlan ? String(rawLabel || "").replace(/\/case-gho/gi, "GEO handover") : punchline(rawLabel));
         if (/before you log off/i.test(labelText)) {
           var caseBit = String(item.caseNumber || "").replace(/\D/g, "");
@@ -4032,6 +4055,7 @@
           .replace(/\s*·?\s*(?:No update yet|New case)\s*$/i, "")
           .replace(/(?:\s*·\s*){2,}/g, " · ")
           .replace(/^\s*·\s*|\s*·\s*$/g, "");
+        if (isSlackRow(item, sec) && /^candidate$/i.test(detailSrc.trim())) detailSrc = "";
         var closeout = /before you log off|tomorrow/.test(sectionKey(sec && sec.title));
         var meta = later && !closeout ? "" : caseMetaLine(item);
         if (meta) {
@@ -4138,6 +4162,7 @@
               var items = ((g && (g.items && g.items.length ? g.items : g.rows)) || []).slice();
               var kind = inboxGroupKind(title);
               items.forEach(function (it) {
+                if (itemIsDone(it)) return;
                 var itemKind = kind || slackItemKind(it);
                 if (itemKind === "unread") unread.push(it);
                 else if (itemKind === "opened") opened.push(it);
@@ -4154,6 +4179,7 @@
           rest.push(sec);
         });
         leftover.forEach(function (it) {
+          if (itemIsDone(it)) return;
           var kind = slackItemKind(it);
           if (kind === "unread") unread.push(it);
           else opened.push(it);
@@ -5116,10 +5142,15 @@
         else if (k === "gus" || raw.gusUrl || raw.workId) kicker = "GUS";
         else if (raw.caseUrl || raw.caseNumber || k === "case" || caseToken(raw)) kicker = "Case";
         document.getElementById("peek-kicker").textContent = kicker;
-        document.getElementById("peek-title").textContent = raw.label || "Peek";
+        var peekTitle = isSlackRow(raw) ? slackHeaderLabel(raw) : (raw.label || "");
+        document.getElementById("peek-title").textContent = peekTitle || raw.label || "Peek";
         if (inbox && raw.peek && Array.isArray(raw.peek.chronology) && raw.peek.chronology.length) {
+          var slackBits = raw.peek.chronology.filter(function (ev) {
+            return String((ev && ev.kind) || "").toLowerCase() === "slack" && peekClean((ev && ev.text) || "");
+          });
+          if (slackBits.length) {
           var thread = '<p class="peek-h">Message</p><ol class="peek-chrono">';
-          raw.peek.chronology.forEach(function (ev) {
+          slackBits.forEach(function (ev) {
             var who = (ev && ev.who) || "";
             var at = (ev && ev.when) || "";
             var text = peekClean((ev && ev.text) || "");
@@ -5140,6 +5171,7 @@
           var threadClose = el.querySelector(".js-peek-close");
           if (threadClose) threadClose.focus();
           return;
+          }
         }
         var paras = [];
         var seenPara = {};
@@ -5154,7 +5186,8 @@
         if (inbox) {
           paras = [];
           seenPara = {};
-          var blob = peekClean((raw.peek && raw.peek.summary) || raw.snippet || raw.openedClip || raw.detail || "");
+          var blob = peekClean((raw.peek && raw.peek.summary) || raw.snippet || "");
+          if (/^candidate$/i.test(String(blob || "").trim())) blob = "";
           if (blob) paras.push(blob);
         } else {
           if (!paras.length) addParas(raw.detail);
