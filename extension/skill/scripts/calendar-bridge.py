@@ -2694,6 +2694,16 @@ ASK_STOP = {
 }
 
 
+def _stale_plan_line(data: dict | None) -> str:
+    """Start-page line. A plan older than 6 hours says when it was run."""
+    generated = plan_generated_at(data) if isinstance(data, dict) else None
+    if generated is None or briefing_is_today(data or {}):
+        return "A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan."
+    hour = generated.hour % 12 or 12
+    when = f"{generated.strftime('%A')}, {generated.strftime('%b')} {generated.day} · {hour}:{generated.strftime('%M %p')}"
+    return f"The last Run Planner was more than 6 hours ago ({when}). Run Planner when you want a fresh plan."
+
+
 def unpublished_page_html() -> bytes:
     html = """<!DOCTYPE html>
 <html lang="en">
@@ -2792,7 +2802,7 @@ def unpublished_page_html() -> bytes:
     <main>
       <h1>No plan for today yet</h1>
       <p class="ver">Version: __EDP_VERSION__</p>
-      <p>A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan.</p>
+      <p>__EDP_STALE__</p>
       <p class="copy">© 2026 Kiran Kumar Garai &lt;kgarai@salesforce.com&gt;. Skill authored by Kiran Kumar Garai.</p>
     </main>
   </div>
@@ -2849,11 +2859,19 @@ def unpublished_page_html() -> bytes:
 </html>
 """
     version = packed_extension_version() or ""
-    return html.replace("__EDP_VERSION__", version).encode("utf-8")
+    note = "A plan stays for six hours so you are not working from an old one. Run Planner when you want a fresh plan."
+    try:
+        prior = load_page_briefing()
+    except Exception:
+        prior = None
+    if isinstance(prior, dict):
+        note = _stale_plan_line(prior)
+    return html.replace("__EDP_VERSION__", version).replace("__EDP_STALE__", note).encode("utf-8")
 
 
 def unpublished_snapshot() -> dict:
-    return {
+    """Start-page status. Logout still receives the shift end from the last plan."""
+    out = {
         "ok": True,
         "unpublished": True,
         "needYou": 0,
@@ -2862,6 +2880,23 @@ def unpublished_snapshot() -> dict:
         "page": "/current.html",
         "briefing": "/briefing.json",
     }
+    try:
+        data = load_page_briefing()
+    except Exception:
+        return out
+    if not isinstance(data, dict):
+        return out
+    out["stale"] = not briefing_is_today(data)
+    out["generatedAt"] = data.get("generatedAt") or ""
+    out["stamp"] = data.get("stamp") or ""
+    out["timezone"] = data.get("timezone") or ""
+    out["shiftEnd"] = data.get("shiftEnd") or ""
+    try:
+        now, _ = shift_now(data)
+        out["shiftEndMs"] = shift_logout_ms(data, now)
+    except Exception:
+        out["shiftEndMs"] = 0
+    return out
 
 
 BRIEFING_SCRIPT_START = '<script type="application/json" id="briefing-data">'
@@ -8225,7 +8260,7 @@ def plan_generated_at(data: dict) -> datetime | None:
 
 
 def briefing_is_today(data: dict) -> bool:
-    """A plan older than 6 hours is not shown. No run time means there is no plan."""
+    """A plan older than 6 hours is not the current page. No run time means there is no plan."""
     generated = plan_generated_at(data)
     if generated is None:
         return False
@@ -10576,6 +10611,12 @@ def is_opus_model(model_id: str) -> bool:
     return bool(re.search(r"opus", (model_id or "").lower()))
 
 
+def _needs_adaptive_thinking(model_id: str) -> bool:
+    """Opus 5, Sonnet 5, and Fable reject thinking.type.enabled. They want adaptive."""
+    low = (model_id or "").lower()
+    return bool(re.search(r"(?:opus|sonnet|fable)[-_.]?5(?:\b|[-_.\d])", low))
+
+
 def fetch_sidecar_models(chosen: str) -> tuple[str, str]:
     """Throwaway comment/email fetch. Opus compact-kills that session, so use another model that already passed."""
     if is_claude_model(chosen) and is_opus_model(chosen):
@@ -10668,20 +10709,24 @@ def _rejects_planner_thinking(body: str) -> bool:
 
 
 def discover_model_shape(token: str, model_id: str) -> str:
-    """The planner request is thinking enabled. A model that refuses that switch stays off the list.
-
-    Any other rejection can still pass on the normal request with thinking left off.
-    """
+    """Learn which thinking shape this model accepts. Opus 5 and Sonnet 5 use adaptive."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, body = _probe_gateway_message(token, model_id, "enabled")
+    first = "adaptive" if _needs_adaptive_thinking(model_id) else "enabled"
+    status, body = _probe_gateway_message(token, model_id, first)
     if status in (401, 403):
         raise RuntimeError("Gateway rejected the token while checking models")
     shape = "no"
     if status == 200:
-        shape = "enabled"
+        shape = first
+    elif first == "enabled" and _rejects_planner_thinking(body):
+        status, _body = _probe_gateway_message(token, model_id, "adaptive")
+        if status in (401, 403):
+            raise RuntimeError("Gateway rejected the token while checking models")
+        if status == 200:
+            shape = "adaptive"
     elif not _rejects_planner_thinking(body):
         status, _body = _probe_gateway_message(token, model_id, "plain")
         if status in (401, 403):
@@ -10698,6 +10743,9 @@ def _prepare_gateway_message(payload: dict) -> None:
     if forced:
         payload["model"] = forced
     model = str(payload.get("model") or "")
+    if _needs_adaptive_thinking(model):
+        _apply_planner_shape(payload, "adaptive", _planner_effort(model, payload))
+        return
     with _MODEL_SHAPE_LOCK:
         shape = _MODEL_SHAPE.get(model) or "plain"
     if shape == "no":
@@ -11306,6 +11354,11 @@ def plan_fatal_message(line: str) -> str:
         )
     if "error doing the fallback" in low and "litellm" in low:
         return "OpenCode LiteLLM fallback failed. Run Planner again."
+    if "thinking.type.enabled" in low and "not supported" in low:
+        return (
+            "This model is fine. The request used the old thinking flag. "
+            "Opus 5 and Sonnet 5 need adaptive thinking. Update Claude Code, then run again."
+        )
     return ""
 
 
@@ -13248,6 +13301,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         return
     env = os.environ.copy()
     env.update(claude_settings_env())
+    env.pop("MAX_THINKING_TOKENS", None)
     env["DAY_PLANNER_NO_OPEN"] = "1"
     env["DAY_PLANNER_NO_BRIDGE"] = "1"
     env["DAY_PLANNER_RUNNER"] = tool["id"]

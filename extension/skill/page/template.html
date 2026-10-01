@@ -1998,9 +1998,9 @@
       </button>
       <button type="button" class="btn" id="notepad-btn">Notepad</button>
       </div>
+      <!-- Help and Feedback stay on the extension bar. Do not put them on this toolbar. -->
       <div class="toolbar-end">
         <span class="toolbar-status" id="cal-status" hidden></span>
-        <a class="btn" id="feedback-link" href="https://docs.google.com/forms/d/e/1FAIpQLScCRaK2kKFbf2aemuGK9fvp1AkteYJ8-Xcrv87YVVPv7gV2Dw/viewform" target="_blank" rel="noopener">Feedback</a>
         <button type="button" class="btn" id="refresh-cal" title="Reload meetings only">Refresh Calendar</button>
         <button type="button" class="btn" id="expand">Expand All</button>
         <button type="button" class="btn" id="collapse">Collapse All</button>
@@ -6036,11 +6036,43 @@
           else openAsk();
         };
       }
+      function showStalePlan(next) {
+        var app = document.getElementById("app");
+        if (app) app.hidden = true;
+        var bar = document.querySelector(".toolbar");
+        if (bar) bar.hidden = true;
+        var quote = document.getElementById("quote-bar");
+        if (quote) quote.hidden = true;
+        var host = document.getElementById("stale-plan");
+        if (!host) {
+          host = document.createElement("main");
+          host.id = "stale-plan";
+          host.style.cssText = "max-width:36rem;margin:18vh auto 0;padding:24px;background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:12px;";
+          var wrap = document.querySelector(".wrap");
+          if (wrap) wrap.appendChild(host);
+          else document.body.appendChild(host);
+        }
+        var when = "";
+        var raw = String((next && next.generatedAt) || "");
+        if (raw.length >= 15) {
+          var y = raw.slice(0, 4), mo = raw.slice(4, 6), d = raw.slice(6, 8);
+          var hh = Number(raw.slice(9, 11)), mm = raw.slice(11, 13);
+          var am = hh >= 12 ? "PM" : "AM";
+          var h12 = hh % 12 || 12;
+          var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+          when = " (" + months[Number(mo) - 1] + " " + Number(d) + ", " + y + " · " + h12 + ":" + mm + " " + am + ")";
+        }
+        host.hidden = false;
+        host.innerHTML = "<h1 style=\"font-size:18px;margin:0 0 8px;\">No plan for today yet</h1><p style=\"margin:0;color:var(--muted);\">The last Run Planner was more than 6 hours ago" + when + ". Run Planner when you want a fresh plan.</p>";
+      }
       function loadPublishedPage() {
         return fetch("/briefing.json?t=" + Date.now(), { cache: "no-store" })
           .then(function (r) { return r.json(); })
           .then(function (next) {
-            if (!next || typeof next !== "object" || next.unpublished) return false;
+            if (!next || typeof next !== "object" || next.unpublished) {
+              if (next && next.unpublished) showStalePlan(next);
+              return false;
+            }
             if (!next.sections) return false;
             var nextStamp = String(next.generatedAt || next.stamp || "");
             var curStamp = String((data && (data.generatedAt || data.stamp)) || "");
@@ -6075,6 +6107,7 @@
             .catch(function () {});
         }
         setInterval(tick, 1000);
+        setInterval(function () { loadPublishedPage(); }, 60000);
       })();
       var askClose = document.getElementById("ask-close");
       if (askClose) askClose.onclick = function () { closeAsk(); };
