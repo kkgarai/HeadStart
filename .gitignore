@@ -4,3 +4,6 @@ skill/out/
 current.html
 *.snapshot.json
 briefing-data.json
+
+# Local pre-ship check. Stays on this Mac.
+extension/skill/scripts/check-rules.py
