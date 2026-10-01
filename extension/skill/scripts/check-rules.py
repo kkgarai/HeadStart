@@ -56,6 +56,7 @@ def main() -> int:
     publish_rules(gate, sanit)
     slack_name_rules(gate, sanit)
     lookback_rules(gate, bridge)
+    adaptive_thinking_rules(gate, bridge)
     plan_stays_through_logout(gate, bridge)
     today_plan_rules(gate, plan)
     peek_rules(gate, plan)
@@ -90,6 +91,39 @@ def toolbar_rules(gate: Gate) -> None:
     panel = (ROOT / "extension" / "panel.html").read_text(encoding="utf-8")
     gate.check("Feedback stays on the extension bar", 'id="feedback-btn"' in panel)
     gate.check("Help stays on the extension bar", 'id="help-btn"' in panel)
+
+
+def adaptive_thinking_rules(gate: Gate, bridge) -> None:
+    """Opus 5 and Sonnet 5 reject thinking.type.enabled. Older Opus stays on enabled."""
+    newer = {
+        "model": "claude-opus-5-5",
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    bridge._prepare_gateway_message(newer)
+    thinking = newer.get("thinking") or {}
+    gate.check(
+        "Opus 5 rewrites enabled thinking to adaptive",
+        thinking.get("type") == "adaptive"
+        and "budget_tokens" not in thinking
+        and (newer.get("output_config") or {}).get("effort") == "low",
+    )
+    older = {
+        "model": "claude-opus-4-6",
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    }
+    with bridge._MODEL_SHAPE_LOCK:
+        bridge._MODEL_SHAPE["claude-opus-4-6"] = "enabled"
+    bridge._prepare_gateway_message(older)
+    kept = older.get("thinking") or {}
+    gate.check(
+        "Opus 4 keeps enabled thinking",
+        kept.get("type") == "enabled" and kept.get("budget_tokens") == 1024,
+    )
+    told = bridge.plan_fatal_message(
+        '400 {"error":{"message":"thinking.type.enabled is not supported"}}'
+    )
+    gate.check("old thinking flag names the fix", "adaptive thinking" in told, told)
 
 
 def version_strings(gate: Gate) -> None:

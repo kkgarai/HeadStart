@@ -10611,6 +10611,12 @@ def is_opus_model(model_id: str) -> bool:
     return bool(re.search(r"opus", (model_id or "").lower()))
 
 
+def _needs_adaptive_thinking(model_id: str) -> bool:
+    """Opus 5, Sonnet 5, and Fable reject thinking.type.enabled. They want adaptive."""
+    low = (model_id or "").lower()
+    return bool(re.search(r"(?:opus|sonnet|fable)[-_.]?5(?:\b|[-_.\d])", low))
+
+
 def fetch_sidecar_models(chosen: str) -> tuple[str, str]:
     """Throwaway comment/email fetch. Opus compact-kills that session, so use another model that already passed."""
     if is_claude_model(chosen) and is_opus_model(chosen):
@@ -10703,20 +10709,24 @@ def _rejects_planner_thinking(body: str) -> bool:
 
 
 def discover_model_shape(token: str, model_id: str) -> str:
-    """The planner request is thinking enabled. A model that refuses that switch stays off the list.
-
-    Any other rejection can still pass on the normal request with thinking left off.
-    """
+    """Learn which thinking shape this model accepts. Opus 5 and Sonnet 5 use adaptive."""
     with _MODEL_SHAPE_LOCK:
         known = _MODEL_SHAPE.get(model_id)
     if known:
         return known
-    status, body = _probe_gateway_message(token, model_id, "enabled")
+    first = "adaptive" if _needs_adaptive_thinking(model_id) else "enabled"
+    status, body = _probe_gateway_message(token, model_id, first)
     if status in (401, 403):
         raise RuntimeError("Gateway rejected the token while checking models")
     shape = "no"
     if status == 200:
-        shape = "enabled"
+        shape = first
+    elif first == "enabled" and _rejects_planner_thinking(body):
+        status, _body = _probe_gateway_message(token, model_id, "adaptive")
+        if status in (401, 403):
+            raise RuntimeError("Gateway rejected the token while checking models")
+        if status == 200:
+            shape = "adaptive"
     elif not _rejects_planner_thinking(body):
         status, _body = _probe_gateway_message(token, model_id, "plain")
         if status in (401, 403):
@@ -10733,6 +10743,9 @@ def _prepare_gateway_message(payload: dict) -> None:
     if forced:
         payload["model"] = forced
     model = str(payload.get("model") or "")
+    if _needs_adaptive_thinking(model):
+        _apply_planner_shape(payload, "adaptive", _planner_effort(model, payload))
+        return
     with _MODEL_SHAPE_LOCK:
         shape = _MODEL_SHAPE.get(model) or "plain"
     if shape == "no":
@@ -11341,6 +11354,11 @@ def plan_fatal_message(line: str) -> str:
         )
     if "error doing the fallback" in low and "litellm" in low:
         return "OpenCode LiteLLM fallback failed. Run Planner again."
+    if "thinking.type.enabled" in low and "not supported" in low:
+        return (
+            "This model is fine. The request used the old thinking flag. "
+            "Opus 5 and Sonnet 5 need adaptive thinking. Update Claude Code, then run again."
+        )
     return ""
 
 
@@ -13283,6 +13301,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         return
     env = os.environ.copy()
     env.update(claude_settings_env())
+    env.pop("MAX_THINKING_TOKENS", None)
     env["DAY_PLANNER_NO_OPEN"] = "1"
     env["DAY_PLANNER_NO_BRIDGE"] = "1"
     env["DAY_PLANNER_RUNNER"] = tool["id"]
