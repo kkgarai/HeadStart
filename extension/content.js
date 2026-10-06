@@ -246,8 +246,12 @@ try {
 
 (function pinTabTitle() {
   if (window.top !== window) return;
-  document.title = "HeadStart";
-  try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
+  function pin() {
+    if (document.title !== "HeadStart") document.title = "HeadStart";
+    try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
+  }
+  pin();
+  setInterval(pin, 1000);
 })();
 
 if (chrome.runtime && chrome.runtime.onMessage) {

@@ -661,13 +661,17 @@ def slack_item_channel(item: dict) -> str:
 
 
 def slack_card_header(item: dict, data: dict | None) -> str:
-    """DM is the other person. Channel/thread is #channel. Never this engineer."""
+    """DM is the other person. Channel/thread is #channel, or that person. Never this engineer."""
     who = slack_other_person(item, data)
     channel = slack_item_channel(item)
     if is_slack_dm(item):
         return f"{who or 'DM'} (DM)"
+    shown = ""
     if channel and channel.lower() not in {"group dm", "dm"}:
         shown = channel if str(channel).startswith("#") else f"#{channel}"
+    if shown and who:
+        return f"{who} — {shown}"[:120]
+    if shown:
         return shown[:120]
     return (who or "Slack")[:120]
 
@@ -697,6 +701,9 @@ def relabel_slack_dms(data: dict) -> None:
             stamp_slack_dm_label(it, data)
         else:
             it["label"] = slack_card_header(it, data)
+        if _is_self_person(it.get("label"), data):
+            ch = slack_item_channel(it)
+            it["label"] = (f"#{ch.lstrip('#')}" if ch else "Slack")[:120]
         if slack_copy_is_placeholder(it.get("detail")):
             it["detail"] = ""
         if slack_copy_is_placeholder(it.get("summary")):

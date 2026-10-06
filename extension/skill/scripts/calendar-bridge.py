@@ -6064,6 +6064,28 @@ _UNLOADED_PEEK_RE = re.compile(
 )
 
 
+def _inbox_slack_meta() -> dict[str, dict]:
+    """id → channel/peer from planner-inbox.txt when the overlay dropped those fields."""
+    found: dict[str, dict] = {}
+    try:
+        text = PLANNER_INBOX_TXT.read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for block in re.split(r"\n(?=## slack )", text or ""):
+        ident = re.search(r"## slack (\S+)", block)
+        if not ident:
+            continue
+        row: dict = {}
+        for key in ("channel", "peer", "channelId", "from"):
+            match = re.search(rf"(?m)^- {key}: (.*)$", block)
+            val = (match.group(1) if match else "").strip()
+            if val:
+                row[key] = val
+        if row:
+            found[ident.group(1)] = row
+    return found
+
+
 def _enrich_slack_card(it: dict, data: dict) -> None:
     """Keep #channel / peer from the fetch when the inbox pass only copied from."""
     ident = str(it.get("id") or "")
@@ -6078,11 +6100,13 @@ def _enrich_slack_card(it: dict, data: dict) -> None:
             break
         if cid and str(row.get("channelId") or "") == cid:
             best = row
-    if not best:
-        return
-    for key in ("channel", "channelId", "peer", "threadTs", "openedClip", "lastHuman", "lastHumanIsMe"):
-        if it.get(key) in (None, "") and best.get(key) not in (None, ""):
-            it[key] = best[key]
+    clip = _inbox_slack_meta().get(ident) if ident else None
+    for src in (best, clip):
+        if not isinstance(src, dict):
+            continue
+        for key in ("channel", "channelId", "peer", "threadTs", "openedClip", "lastHuman", "lastHumanIsMe"):
+            if it.get(key) in (None, "") and src.get(key) not in (None, ""):
+                it[key] = src[key]
 
 
 def _finish_slack_card(it: dict, data: dict) -> None:

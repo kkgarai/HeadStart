@@ -1284,8 +1284,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 (function pinTabTitle() {
-  document.title = "HeadStart";
-  try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
+  function pin() {
+    if (document.title !== "HeadStart") document.title = "HeadStart";
+    try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
+  }
+  pin();
+  setInterval(pin, 1000);
 })();
 
 if (missCopy) missCopy.addEventListener("click", copyNativeInstallCmd);
