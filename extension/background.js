@@ -64,6 +64,7 @@ async function bootFromUpdate() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
+  chrome.action.setBadgeText({ text: "" });
   ensureAlarms();
   if (await bootFromUpdate()) return;
   const tabs = await plannerTabs();
@@ -76,6 +77,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 });
 
 chrome.runtime.onStartup.addListener(async () => {
+  chrome.action.setBadgeText({ text: "" });
   ensureAlarms();
   if (await bootFromUpdate()) return;
   const tabs = await plannerTabs();
@@ -470,9 +472,7 @@ async function syncFromBridge() {
     await chrome.storage.local.set({ snapshot: snap });
     const storedDone = await chrome.storage.local.get(["edpDone"]);
     const doneKeys = edpActiveKeys(storedDone.edpDone || {}, snap.timezone);
-    const n = snap.needYou;
-    chrome.action.setBadgeBackgroundColor({ color: "#ba0517" });
-    chrome.action.setBadgeText({ text: n > 0 ? String(n) : "" });
+    chrome.action.setBadgeText({ text: "" });
     const reminders = (snap.reminders || []).filter((row) => {
       if (!row || !row.id) return false;
       if (doneKeys.has("id:" + row.id)) return false;
