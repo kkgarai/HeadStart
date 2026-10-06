@@ -520,11 +520,7 @@ async function restorePlannerGroup(tabId, saved) {
 }
 
 async function flashPlannerTabs(on, msg) {
-  const tabs = await plannerTabs();
-  for (const tab of tabs) {
-    if (!tab || tab.id == null) continue;
-    chrome.tabs.sendMessage(tab.id, { type: "edpTabFlash", on: !!on, msg: msg || "" }).catch(() => {});
-  }
+  // Tab-title flash was never a reliable highlight. Keep the Chrome tab named HeadStart.
 }
 
 async function clearLeftoverBlinkGroups() {
@@ -910,21 +906,14 @@ function omniIsOfflineStatus(label) {
 
 function omniInAdherence(label, kinds) {
   const list = Array.isArray(kinds) ? kinds : [];
+  if (omniMealOnly(list)) return true;
   const low = String(label || "").trim().toLowerCase();
   if (/screen[\s-]*sharing/.test(low)) return true;
-  if (omniMealOnly(list) && omniIsOfflineStatus(label)) return true;
   if (!low) return false;
   if (low === "busy" || low.indexOf("busy ") === 0 || low.indexOf("busy-") === 0) return false;
   if (!list.length) return false;
   const tokens = omniLabelTokens(low);
-  const meal = list.filter((kind) => OMNI_MEAL_KINDS[kind]);
   const work = list.filter((kind) => OMNI_WORK_KINDS[kind]);
-  if (meal.length && !work.length) {
-    for (let i = 0; i < meal.length; i++) {
-      if (omniTokenHit(tokens, meal[i])) return true;
-    }
-    return false;
-  }
   const available = low.indexOf("available") === 0 || low.indexOf("chat online") >= 0;
   if (!work.length || !available) return false;
   for (let i = 0; i < work.length; i++) {
@@ -934,14 +923,7 @@ function omniInAdherence(label, kinds) {
 }
 
 function omniOutOfAdherence(records, kinds) {
-  if (omniMealOnly(kinds)) {
-    if (!records || !records.length) return false;
-    const rec = records[0] || {};
-    const status = rec.ServicePresenceStatus || {};
-    const label = String(status.MasterLabel || rec.MasterLabel || "").trim();
-    if (omniIsOfflineStatus(label)) return false;
-    return !omniInAdherence(label, kinds);
-  }
+  if (omniMealOnly(kinds)) return false;
   if (!records || !records.length) return true;
   const rec = records[0] || {};
   const status = rec.ServicePresenceStatus || {};

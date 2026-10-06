@@ -244,62 +244,10 @@ try {
   document.documentElement.setAttribute("data-edp-ext", "1");
 } catch (_) {}
 
-(function tabFlash() {
+(function pinTabTitle() {
   if (window.top !== window) return;
-  let timer = null;
-  let REAL_TITLE = "HeadStart";
-  let flashMsg = "Notification";
-  function isFlashTitle(t) {
-    t = String(t || "").trim();
-    return t === flashMsg || /^(?:[●⚠]\s*)+/.test(t) || /^(?:●+\s*)*logout(?:\s*●+)*$/i.test(t);
-  }
-  function clearAlertIcon() {
-    document.querySelectorAll("link[rel~='icon']").forEach((link) => {
-      if (String(link.href || "").indexOf("data:image") === 0) link.remove();
-    });
-  }
-  try {
-    const kept = sessionStorage.getItem("edpRealTabTitle");
-    if (kept && !isFlashTitle(kept)) REAL_TITLE = kept;
-    else if (document.title && !isFlashTitle(document.title)) {
-      REAL_TITLE = document.title;
-      sessionStorage.setItem("edpRealTabTitle", REAL_TITLE);
-    }
-  } catch (e) {}
-  clearAlertIcon();
-  if (isFlashTitle(document.title)) document.title = REAL_TITLE;
-  function stopFlash() {
-    if (timer) clearInterval(timer);
-    timer = null;
-    document.title = REAL_TITLE;
-    clearAlertIcon();
-  }
-  function startFlash(msg) {
-    if (msg) flashMsg = String(msg);
-    if (timer) return;
-    if (document.title && !isFlashTitle(document.title)) REAL_TITLE = document.title;
-    timer = setInterval(() => {
-      document.title = document.title === REAL_TITLE ? flashMsg : REAL_TITLE;
-    }, 1000);
-  }
-  function paint(on, msg) {
-    if (on) startFlash(msg);
-    else stopFlash();
-  }
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg || msg.type !== "edpTabFlash") return;
-    paint(!!msg.on, msg.msg);
-  });
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !changes.edpTabBlinkOn) return;
-    chrome.storage.local.get(["edpTabBlinkOn", "edpTabBlinkMsg"], (rec) => {
-      paint(!!(rec && rec.edpTabBlinkOn), rec && rec.edpTabBlinkMsg);
-    });
-  });
-  chrome.storage.local.get(["edpTabBlinkOn", "edpTabBlinkMsg"], (rec) => {
-    if (rec && rec.edpTabBlinkOn) paint(true, rec.edpTabBlinkMsg);
-    else if (isFlashTitle(document.title)) stopFlash();
-  });
+  document.title = "HeadStart";
+  try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
 })();
 
 if (chrome.runtime && chrome.runtime.onMessage) {

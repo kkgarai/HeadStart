@@ -621,16 +621,53 @@ def slack_dm_peer(item: dict, data: dict | None) -> str:
     return ", ".join(people[:3])
 
 
+_SLACK_HASH_CHANNEL = re.compile(r"#([A-Za-z][A-Za-z0-9._-]{1,80})")
+
+
+def slack_other_person(item: dict, data: dict | None) -> str:
+    """Someone else on the card. Never this engineer."""
+    names: list[object] = [
+        item.get("peer"),
+        item.get("from"),
+        item.get("lastHuman"),
+    ]
+    peek = item.get("peek") if isinstance(item.get("peek"), dict) else {}
+    for beat in peek.get("chronology") or []:
+        if isinstance(beat, dict):
+            names.append(beat.get("who"))
+    for raw in names:
+        n = slack_person_name(raw)
+        if n and not _is_self_person(n, data) and not _SLACK_BOT_WHO.search(n):
+            return n
+    return slack_dm_peer(item, data)
+
+
+def slack_item_channel(item: dict) -> str:
+    """#channel for a leftover. Search From is often this engineer; do not use that."""
+    ch = slack_channel_title(item.get("channel") or "")
+    if ch and ch.lower() not in {"group dm", "dm", "slack", "candidate"}:
+        return ch
+    blob = " ".join(
+        str(item.get(k) or "")
+        for k in ("label", "snippet", "detail", "openedClip", "summary")
+    )
+    peek = item.get("peek")
+    if isinstance(peek, dict):
+        blob += " " + str(peek.get("summary") or "")
+    elif isinstance(peek, str):
+        blob += " " + peek
+    match = _SLACK_HASH_CHANNEL.search(blob)
+    return match.group(1) if match else ""
+
+
 def slack_card_header(item: dict, data: dict | None) -> str:
-    """Person or channel only. The message stays in Peek."""
-    who = slack_person_name(item.get("from") or "") or slack_dm_peer(item, data)
-    channel = slack_channel_title(item.get("channel") or "")
+    """DM is the other person. Channel/thread is #channel. Never this engineer."""
+    who = slack_other_person(item, data)
+    channel = slack_item_channel(item)
     if is_slack_dm(item):
         return f"{who or 'DM'} (DM)"
     if channel and channel.lower() not in {"group dm", "dm"}:
-        shown = channel if channel.startswith("#") else f"#{channel}"
-        if who:
-            return f"{who} — {shown}"[:120]
+        shown = channel if str(channel).startswith("#") else f"#{channel}"
         return shown[:120]
     return (who or "Slack")[:120]
 
