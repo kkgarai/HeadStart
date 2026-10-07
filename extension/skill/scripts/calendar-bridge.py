@@ -8636,7 +8636,20 @@ def published_page_is_current() -> bool:
 
 
 def live_page_html() -> bytes:
-    return PAGE.read_bytes() if published_page_is_current() else unpublished_page_html()
+    if not published_page_is_current():
+        return unpublished_page_html()
+    template_path = SKILL_ROOT / "page" / "template.html"
+    try:
+        template = template_path.read_text(encoding="utf-8")
+        data = load_page_briefing()
+        raw = json.dumps(data, ensure_ascii=False)
+        if "</" in raw:
+            raw = raw.replace("</", "<\\/")
+        if "__BRIEFING_DATA__" in template:
+            return template.replace("__BRIEFING_DATA__", raw).encode("utf-8")
+    except Exception:
+        pass
+    return PAGE.read_bytes()
 
 
 def load_live_briefing() -> dict:
