@@ -5593,11 +5593,14 @@ def evidence_from_seed(seeded: dict) -> dict:
                     "id", "kind", "role", "name", "workId", "status", "due",
                     "outOfSla", "slaValue", "slaWarningSent", "slaViolations",
                     "start", "end", "label", "detail", "gusUrl", "caseNumber", "type",
+                    "update", "chatter", "peek", "summary", "subject", "modified",
+                    "recordType",
                 ),
             )
             for row in (seeded.get("gusCandidates") or [])
             if isinstance(row, dict)
         ][:40],
+        "gusFeedClips": seeded.get("gusFeedClips") if isinstance(seeded.get("gusFeedClips"), dict) else {},
         "slaPending": [
             row
             for row in (seeded.get("slaPending") or [])
@@ -8642,6 +8645,10 @@ def live_page_html() -> bytes:
     try:
         template = template_path.read_text(encoding="utf-8")
         data = load_page_briefing()
+        try:
+            _sanitize_mod().fill_gus_item_peeks(data)
+        except Exception:
+            pass
         raw = json.dumps(data, ensure_ascii=False)
         if "</" in raw:
             raw = raw.replace("</", "<\\/")
@@ -12398,7 +12405,132 @@ def _append_lap_rows(nums: list, case_ids: list, candidates: list, digest_lines:
         digest_lines.append(f"- end: {rec.get('SM_Target_Execution_End_Date_Time__c') or '—'}")
         if chatter:
             digest_lines.append("- chatter: " + chatter)
+        _attach_work_peek(item)
     return lap_rows
+
+
+def _attach_work_peek(item: dict) -> None:
+    """Peek on a GUS work / LAP row from status, due, and chatter — not case peeks."""
+    if not isinstance(item, dict):
+        return
+    summary = clip(str(item.get("detail") or item.get("label") or "").strip(), 220)
+    chrono = []
+    note = str(item.get("update") or item.get("chatter") or "").strip()
+    if note:
+        chrono.append(
+            {
+                "kind": "chatter",
+                "text": clip(note, 400),
+                "when": str(item.get("modified") or "")[:32],
+            }
+        )
+    elif str(item.get("detail") or "").strip():
+        chrono.append(
+            {
+                "kind": "gus",
+                "text": clip(str(item.get("detail")), 220),
+                "when": str(item.get("modified") or "")[:32],
+            }
+        )
+    if summary or chrono:
+        item["summary"] = summary
+        item["peek"] = {"summary": summary, "chronology": chrono}
+
+
+def fill_gus_feed_clips(seeded: dict) -> None:
+    """Chatter body for leftover GUS Peek (FeedItem ids on mail / leftover cards)."""
+    if not isinstance(seeded, dict):
+        return
+    ids: list[str] = []
+    seen: set[str] = set()
+
+    def take(text: object) -> None:
+        for match in re.finditer(r"(0D5[A-Za-z0-9]{12,15})", str(text or "")):
+            fid = match.group(1)
+            if fid in seen or "'" in fid:
+                continue
+            seen.add(fid)
+            ids.append(fid)
+
+    try:
+        prev = load_page_briefing()
+    except Exception:
+        prev = {}
+    if isinstance(prev, dict):
+        for sec in prev.get("sections") or []:
+            if not isinstance(sec, dict):
+                continue
+            title = str(sec.get("title") or "")
+            if not re.match(r"^gus\b", title, re.I):
+                continue
+            rows = list(sec.get("items") or [])
+            for group in sec.get("groups") or []:
+                if isinstance(group, dict):
+                    rows.extend(group.get("items") or [])
+            for it in rows:
+                if isinstance(it, dict):
+                    take(it.get("gusUrl") or "")
+                    take(it.get("detail") or "")
+                    take(it.get("snippet") or "")
+    for mail in seeded.get("mailCandidates") or []:
+        if isinstance(mail, dict):
+            take(
+                " ".join(
+                    str(mail.get(key) or "")
+                    for key in ("openedClip", "snippet", "label", "detail")
+                )
+            )
+    clips: dict[str, dict] = {}
+    quoted = _soql_in(ids, 20)
+    if quoted:
+        try:
+            recs = gus_soql(
+                "SELECT Id, Body, CreatedDate, CreatedBy.Name, ParentId "
+                "FROM FeedItem WHERE Id IN (%s)" % quoted
+            )
+        except Exception:
+            recs = []
+        for rec in recs or []:
+            if not isinstance(rec, dict):
+                continue
+            rid = str(rec.get("Id") or "").strip()
+            if not rid:
+                continue
+            body = clip(re.sub(r"<[^>]+>", " ", str(rec.get("Body") or "")), 500)
+            clips[rid] = {
+                "who": _rel_name(rec, "CreatedBy") or str(rec.get("CreatedBy.Name") or "")[:80],
+                "when": str(rec.get("CreatedDate") or "")[:32],
+                "text": body,
+                "parentId": str(rec.get("ParentId") or ""),
+            }
+        try:
+            comments = gus_soql(
+                "SELECT CommentBody, CreatedDate, CreatedBy.Name, FeedItemId "
+                "FROM FeedComment WHERE FeedItemId IN (%s) ORDER BY CreatedDate ASC LIMIT 40"
+                % quoted
+            )
+        except Exception:
+            comments = []
+        for row in comments or []:
+            if not isinstance(row, dict):
+                continue
+            fid = str(row.get("FeedItemId") or "").strip()
+            note = clip(re.sub(r"<[^>]+>", " ", str(row.get("CommentBody") or "")), 400)
+            if not fid or not note:
+                continue
+            bag = clips.setdefault(
+                fid,
+                {"who": "", "when": "", "text": "", "parentId": "", "comments": []},
+            )
+            bag.setdefault("comments", []).append(
+                {
+                    "who": _rel_name(row, "CreatedBy")
+                    or str(row.get("CreatedBy.Name") or "")[:80],
+                    "when": str(row.get("CreatedDate") or "")[:32],
+                    "text": note,
+                }
+            )
+    seeded["gusFeedClips"] = clips
 
 
 def fill_gus_work(seeded: dict, rows: list) -> None:
@@ -12470,6 +12602,7 @@ def fill_gus_work(seeded: dict, rows: list) -> None:
             "gusUrl": GUS_WORK_URL.format(id=wid),
             "subject": clip(str(rec.get("Subject__c") or ""), 80),
         }
+        _attach_work_peek(item)
         work_by_id[wid] = item
         candidates.append(item)
 
@@ -12566,6 +12699,7 @@ def fill_gus_work(seeded: dict, rows: list) -> None:
                 note = gus_chatter_clip(str(item.get("workId") or ""), tracked=True)
                 if note:
                     item["update"] = note
+                    _attach_work_peek(item)
             digest_lines.insert(2, "- investigation SLA fields are copied as stored. LAP rows have start and end.")
             for item in list(work_by_id.values())[:40]:
                 digest_lines.append(f"## work {item.get('name') or item.get('workId')}")
@@ -12600,6 +12734,14 @@ def fill_gus_work(seeded: dict, rows: list) -> None:
         digest_lines.append("- fetchOk: false")
         digest_lines.append("- " + seeded["gusFetchError"])
         append_plan_step(kind="log", label="GUS fetch failed · " + seeded["gusFetchError"])
+    try:
+        fill_gus_feed_clips(seeded)
+        n_clips = len(seeded.get("gusFeedClips") or {})
+        if n_clips:
+            append_plan_step(kind="log", label="GUS Peek chatter · " + str(n_clips) + " feed")
+    except Exception as exc:
+        seeded["gusFeedClips"] = {}
+        append_plan_step(kind="log", label="GUS Peek chatter failed · " + clip(str(exc), 160))
     seeded["gusCandidates"] = candidates
     seeded["_gusDigest"] = "\n".join(digest_lines) if digest_lines else "- fetchOk: false"
 
