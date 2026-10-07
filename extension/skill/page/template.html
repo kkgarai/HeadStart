@@ -4162,7 +4162,6 @@
               var items = ((g && (g.items && g.items.length ? g.items : g.rows)) || []).slice();
               var kind = inboxGroupKind(title);
               items.forEach(function (it) {
-                if (itemIsDone(it)) return;
                 var itemKind = kind || slackItemKind(it);
                 if (itemKind === "unread") unread.push(it);
                 else if (itemKind === "opened") opened.push(it);
@@ -4179,7 +4178,6 @@
           rest.push(sec);
         });
         leftover.forEach(function (it) {
-          if (itemIsDone(it)) return;
           var kind = slackItemKind(it);
           if (kind === "unread") unread.push(it);
           else opened.push(it);
