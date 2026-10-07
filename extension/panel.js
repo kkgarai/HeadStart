@@ -1283,62 +1283,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (modelInput && [...modelInput.options].some((opt) => opt.value === id)) modelInput.value = id;
 });
 
-(function tabFlash() {
-  var timer = null;
-  var REAL_TITLE = "HeadStart";
-  var flashMsg = "Notification";
-  function isFlashTitle(t) {
-    t = String(t || "").trim();
-    return t === flashMsg || /^(?:[●⚠]\s*)+/.test(t) || /^(?:●+\s*)*logout(?:\s*●+)*$/i.test(t);
+(function pinTabTitle() {
+  function pin() {
+    if (document.title !== "HeadStart") document.title = "HeadStart";
+    try { sessionStorage.removeItem("edpRealTabTitle"); } catch (e) {}
   }
-  function clearAlertIcon() {
-    var links = document.querySelectorAll("link[rel~='icon']");
-    for (var i = 0; i < links.length; i++) {
-      if (String(links[i].href || "").indexOf("data:image") === 0) links[i].remove();
-    }
-  }
-  try {
-    var kept = sessionStorage.getItem("edpRealTabTitle");
-    if (kept && !isFlashTitle(kept)) REAL_TITLE = kept;
-    else if (document.title && !isFlashTitle(document.title)) {
-      REAL_TITLE = document.title;
-      sessionStorage.setItem("edpRealTabTitle", REAL_TITLE);
-    }
-  } catch (e) {}
-  clearAlertIcon();
-  if (isFlashTitle(document.title)) document.title = REAL_TITLE;
-  function stopFlash() {
-    if (timer) clearInterval(timer);
-    timer = null;
-    document.title = REAL_TITLE;
-    clearAlertIcon();
-  }
-  function startFlash(msg) {
-    if (msg) flashMsg = String(msg);
-    if (timer) return;
-    if (document.title && !isFlashTitle(document.title)) REAL_TITLE = document.title;
-    timer = setInterval(function () {
-      document.title = document.title === REAL_TITLE ? flashMsg : REAL_TITLE;
-    }, 1000);
-  }
-  function paint(on, msg) {
-    if (on) startFlash(msg);
-    else stopFlash();
-  }
-  chrome.runtime.onMessage.addListener(function (msg) {
-    if (!msg || msg.type !== "edpTabFlash") return;
-    paint(!!msg.on, msg.msg);
-  });
-  chrome.storage.onChanged.addListener(function (changes, area) {
-    if (area !== "local" || !changes.edpTabBlinkOn) return;
-    chrome.storage.local.get(["edpTabBlinkOn", "edpTabBlinkMsg"], function (rec) {
-      paint(!!(rec && rec.edpTabBlinkOn), rec && rec.edpTabBlinkMsg);
-    });
-  });
-  chrome.storage.local.get(["edpTabBlinkOn", "edpTabBlinkMsg"], function (rec) {
-    if (rec && rec.edpTabBlinkOn) paint(true, rec.edpTabBlinkMsg);
-    else if (isFlashTitle(document.title)) stopFlash();
-  });
+  pin();
+  setInterval(pin, 1000);
 })();
 
 if (missCopy) missCopy.addEventListener("click", copyNativeInstallCmd);

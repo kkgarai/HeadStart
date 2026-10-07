@@ -1414,34 +1414,98 @@ def _auth_args(provider: str) -> list[str]:
     return []
 
 
-def dx_google_connected() -> bool:
-    """True when this bridge already has a Google session.
+_GATEWAY_REFRESH_AT = 0.0
+_GATEWAY_REFRESH_OK = False
+_DX_USABLE_CACHE: dict[str, tuple[float, bool]] = {}
 
-    Do not run `mcp-adaptor auth` here. That command starts a browser login,
+
+def app_support_dir() -> pathlib.Path:
+    if sys.platform == "darwin":
+        return HOME / "Library" / "Application Support" / "engineer-day-planner"
+    if os.name == "nt":
+        return pathlib.Path(os.environ.get("LOCALAPPDATA") or HOME) / "engineer-day-planner"
+    return pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or (HOME / ".config")) / "engineer-day-planner"
+
+
+def _dx_auth_stamp_path() -> pathlib.Path:
+    return app_support_dir() / "dx-auth.json"
+
+
+def remember_dx_login(server: str) -> None:
+    path = _dx_auth_stamp_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data[server] = {"ok": True, "at": int(time.time())}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        return
+
+
+def refresh_gateway_login() -> bool:
+    """Refresh the stored QuantumK JWT. No browser when a refresh token exists.
+
+    `auth --provider … --validate` is a new browser login. This call has no provider.
+    """
+    global _GATEWAY_REFRESH_AT, _GATEWAY_REFRESH_OK
+    now = time.time()
+    if _GATEWAY_REFRESH_OK and now - _GATEWAY_REFRESH_AT < 300:
+        return True
+    binary = find_mcp_adaptor_bin()
+    if not binary:
+        _GATEWAY_REFRESH_OK = False
+        return False
+    try:
+        env = dict(os.environ)
+        env.setdefault("MCP_ADAPTOR_ENV", "prod")
+        env["MCP_ADAPTOR_PASSTHROUGH"] = "off"
+        proc = subprocess.run(
+            [binary, "auth", "--validate"],
+            capture_output=True,
+            text=True,
+            timeout=25,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        _GATEWAY_REFRESH_OK = False
+        return False
+    text = (proc.stdout or "") + (proc.stderr or "")
+    if "Opening browser" in text or "callback server started" in text.lower():
+        _GATEWAY_REFRESH_OK = False
+        _GATEWAY_REFRESH_AT = now
+        return False
+    ok = proc.returncode == 0
+    _GATEWAY_REFRESH_OK = ok
+    _GATEWAY_REFRESH_AT = now
+    return ok
+
+
+def _provider_login_finished(text: str, provider: str) -> bool:
+    """True only for that provider. A QuantumK gateway login is not GUS or Google."""
+    needle = "OAuth authentication completed (provider=" + str(provider or "")
+    return needle in (text or "")
+
+
+def dx_google_connected() -> bool:
+    """True when this bridge can use a Google session without opening a browser.
+
+    Do not run `mcp-adaptor auth --provider`. That command starts a login,
     including when the flag is `--validate`.
     """
-    return bool(_GOOGLE_DX_OK or _dx_session_ready() or _google_auth_log_ok())
+    if _GOOGLE_DX_OK or _dx_session_ready():
+        return True
+    return dx_slot_usable("google-workspace-rw")
 
 
 def dx_provider_connected(provider: str, timeout: float = 12) -> bool:
-    """True when `auth --validate` accepts this provider.
-
-    Do not call this from the panel status check. `--validate` opens a browser
-    login when the stored session is missing.
-    """
-    binary = find_mcp_adaptor_bin()
-    if not binary or not provider or not adaptor_supports_provider(binary):
-        return False
-    try:
-        proc = subprocess.run(
-            [binary, "auth", "--provider", provider, "--validate"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return proc.returncode == 0
+    """Reuse stored keyring tokens. Never `auth --provider` (that opens a browser)."""
+    del timeout
+    return dx_slot_usable(provider)
 
 
 _DX_AUTH_LOCK = threading.Lock()
@@ -1459,11 +1523,15 @@ def _launch_adaptor_auth(args: list[str], key: str, log_name: str) -> subprocess
         log = SKILL_ROOT / "out" / log_name
         log.parent.mkdir(parents=True, exist_ok=True)
         handle = open(log, "w", encoding="utf-8")
+        env = dict(os.environ)
+        env.setdefault("MCP_ADAPTOR_ENV", "prod")
+        env["MCP_ADAPTOR_PASSTHROUGH"] = "off"
         proc = subprocess.Popen(
             [binary, "auth", *args],
             stdin=subprocess.DEVNULL,
             stdout=handle,
             stderr=subprocess.STDOUT,
+            env=env,
             start_new_session=True,
         )
         _DX_AUTH_PROCS[key] = proc
@@ -1530,18 +1598,17 @@ def _auth_shows_browser(log_name: str, proc: subprocess.Popen, wait: float = 4.0
 
 
 def _auth_log_ok(log_name: str, provider: str) -> bool:
-    """A finished adaptor login stays connected after the bridge restarts."""
+    """A finished *provider* login. A QuantumK gateway success is not this provider."""
     paths = [SKILL_ROOT / "out" / log_name]
     runs = HOME / "Library" / "Application Support" / "engineer-day-planner" / "runs"
     if runs.is_dir():
         paths.extend(runs.glob("*/skill/out/" + log_name))
-    marker = "OAuth authentication completed (provider=" + provider
     for path in paths:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if marker in text or "Authentication successful" in text:
+        if _provider_login_finished(text, provider):
             return True
     return False
 
@@ -1558,6 +1625,8 @@ def _mark_google_auth_ok(proc: subprocess.Popen) -> None:
         code = 1
     if code == 0 or _google_auth_log_ok():
         _GOOGLE_DX_OK = True
+        remember_dx_login("google-workspace-rw")
+        _DX_USABLE_CACHE.pop("google-workspace-rw", None)
 
 
 def _gus_auth_log_ok() -> bool:
@@ -1572,29 +1641,19 @@ def _mark_gus_auth_ok(proc: subprocess.Popen) -> None:
         code = 1
     if code == 0 or _gus_auth_log_ok():
         _GUS_DX_OK = True
+        remember_dx_login("gus")
+        _DX_USABLE_CACHE.pop("gus", None)
 
 
 def gus_dx_connected() -> bool:
-    return bool(_GUS_DX_OK or _gus_auth_log_ok())
+    if _GUS_DX_OK:
+        return True
+    return dx_slot_usable("gus")
 
 
-def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -> dict:
-    """Open one sign-in page. A click with no browser is a failure, not a success."""
-    if not find_mcp_adaptor_bin():
-        raise RuntimeError("DX adaptor is not installed on this machine")
-    args = _auth_args(provider)
-    proc = _launch_adaptor_auth(args, key, log_name)
+def _start_provider_browser(provider: str, key: str, log_name: str, label: str) -> dict:
+    proc = _launch_adaptor_auth(_auth_args(provider), key, log_name)
     shown = _auth_shows_browser(log_name, proc)
-    if not shown and proc.poll() is not None:
-        tail = _auth_log_text(log_name).lower()
-        if args and (
-            "unknown flag" in tail
-            or "unauthenticated" in tail
-            or "401" in tail
-            or "failed to initiate" in tail
-        ):
-            proc = _launch_adaptor_auth([], key + "-gateway", log_name)
-            shown = _auth_shows_browser(log_name, proc)
     if shown or proc.poll() is None:
         if provider == "google-workspace-rw" and proc.poll() is None:
             threading.Thread(target=_mark_google_auth_ok, args=(proc,), daemon=True).start()
@@ -1609,6 +1668,50 @@ def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -
     lines = [line.strip() for line in _auth_log_text(log_name).splitlines() if line.strip()]
     last = lines[-1] if lines else f"Could not open the {label} sign-in"
     raise RuntimeError(last[-240:])
+
+
+def begin_provider_sign_in(provider: str, key: str, log_name: str, label: str) -> dict:
+    """Reuse the keyring session when it is still valid. Open a browser only when it is not."""
+    if not find_mcp_adaptor_bin():
+        raise RuntimeError("DX adaptor is not installed on this machine")
+    refresh_gateway_login()
+    if dx_slot_usable(provider):
+        return {
+            "ok": True,
+            "already": True,
+            "started": False,
+            "message": f"{label} is already connected.",
+        }
+    if not refresh_gateway_login():
+        proc = _launch_adaptor_auth([], "gateway", ".dx-gateway-auth.log")
+        shown = _auth_shows_browser(".dx-gateway-auth.log", proc)
+
+        def _after_gateway() -> None:
+            try:
+                proc.wait(timeout=900)
+            except Exception:
+                return
+            refresh_gateway_login()
+            try:
+                _start_provider_browser(provider, key, log_name, label)
+            except Exception:
+                return
+
+        if shown or proc.poll() is None:
+            threading.Thread(target=_after_gateway, daemon=True).start()
+            return {
+                "ok": True,
+                "started": True,
+                "already": False,
+                "message": (
+                    f"Finish the DX sign-in in the browser. {label} will connect after that."
+                ),
+            }
+        tail = _auth_log_text(".dx-gateway-auth.log")
+        lines = [line.strip() for line in tail.splitlines() if line.strip()]
+        last = lines[-1] if lines else f"Could not open the {label} sign-in"
+        raise RuntimeError(last[-240:])
+    return _start_provider_browser(provider, key, log_name, label)
 
 
 def begin_google_sign_in() -> dict:
@@ -1761,18 +1864,48 @@ def orgcs_browser_call(tool: str, arguments: dict, timeout: float = 25) -> str:
     raise RuntimeError("unavailable")
 
 
+class _DxSlot:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.proc: subprocess.Popen | None = None
+        self.server = ""
+        self.buf = bytearray()
+        self.tools: dict[str, str] = {}
+        self.seq = 10
+
+    def ready(self) -> bool:
+        return bool(self.proc and self.proc.poll() is None and self.tools)
+
+    def stop(self) -> None:
+        proc = self.proc
+        self.proc = None
+        self.tools = {}
+        self.buf.clear()
+        if proc and proc.poll() is None:
+            proc.kill()
+
+
+_GOOGLE_DX = _DxSlot()
+_GUS_DX = _DxSlot()
+
+
+def _dx_slot_for(server: str) -> _DxSlot:
+    if str(server or "").startswith("google"):
+        return _GOOGLE_DX
+    return _GUS_DX
+
+
 def _dx_stop_locked() -> None:
     global _DX_PROC, _DX_TOOLS
-    proc = _DX_PROC
+    _GOOGLE_DX.stop()
     _DX_PROC = None
     _DX_TOOLS = {}
     _DX_BUF.clear()
-    if proc and proc.poll() is None:
-        proc.kill()
 
 
-def _dx_take_message() -> dict | None:
-    raw = bytes(_DX_BUF)
+def _dx_take_message(buf: bytearray | None = None) -> dict | None:
+    store = _DX_BUF if buf is None else buf
+    raw = bytes(store)
     if raw.startswith(b"{") or raw.startswith(b"["):
         line, _, rest = raw.partition(b"\n")
         if b"\n" not in raw and not line.endswith(b"}"):
@@ -1781,17 +1914,17 @@ def _dx_take_message() -> dict | None:
             parsed = json.loads(line.decode("utf-8"))
         except json.JSONDecodeError:
             return None
-        del _DX_BUF[: len(line) + (1 if rest or raw.endswith(b"\n") else 0)]
+        del store[: len(line) + (1 if rest or raw.endswith(b"\n") else 0)]
         return parsed if isinstance(parsed, dict) else None
     marker = b"Content-Length:"
     start = raw.find(marker)
     if start < 0:
         if len(raw) > 8192:
-            del _DX_BUF[:-256]
+            del store[:-256]
         return None
     if start:
-        del _DX_BUF[:start]
-        raw = bytes(_DX_BUF)
+        del store[:start]
+        raw = bytes(store)
     sep = raw.find(b"\r\n\r\n")
     if sep < 0:
         return None
@@ -1803,17 +1936,22 @@ def _dx_take_message() -> dict | None:
     if len(raw) < body_at + length:
         return None
     parsed = json.loads(raw[body_at : body_at + length].decode("utf-8"))
-    del _DX_BUF[: body_at + length]
+    del store[: body_at + length]
     return parsed if isinstance(parsed, dict) else None
 
 
-def _dx_read_locked(proc: subprocess.Popen, timeout: float) -> dict:
+def _dx_read_locked(proc: subprocess.Popen, timeout: float, buf: bytearray | None = None) -> dict:
+    store = _DX_BUF if buf is None else buf
     deadline = time.time() + timeout
     fd = proc.stdout.fileno()
     while time.time() < deadline:
-        got = _dx_take_message()
+        if proc.poll() is not None:
+            break
+        got = _dx_take_message(store)
         if got is not None and (got.get("id") is not None or got.get("error")):
             return got
+        if proc.poll() is not None:
+            raise RuntimeError("DX adaptor exited before it listed tools")
         wait = min(1.0, max(0.05, deadline - time.time()))
         ready, _, _ = select.select([fd], [], [], wait)
         if not ready:
@@ -1821,15 +1959,33 @@ def _dx_read_locked(proc: subprocess.Popen, timeout: float) -> dict:
         chunk = os.read(fd, 65536)
         if not chunk:
             break
-        _DX_BUF.extend(chunk)
+        store.extend(chunk)
     raise TimeoutError("DX adaptor timed out")
 
 
 def _dx_send_locked(proc: subprocess.Popen, payload: dict) -> None:
+    """Native adaptor stdio is one JSON object per line, not LSP Content-Length."""
     raw = json.dumps(payload).encode("utf-8")
-    proc.stdin.write(b"Content-Length: %d\r\n\r\n" % len(raw))
-    proc.stdin.write(raw)
+    proc.stdin.write(raw + b"\n")
     proc.stdin.flush()
+
+
+def _dx_rpc_on(slot: _DxSlot, method: str, params: dict, timeout: float) -> dict:
+    slot.seq += 1
+    msg_id = slot.seq
+    proc = slot.proc
+    if proc is None:
+        raise RuntimeError("DX adaptor is not running")
+    _dx_send_locked(
+        proc,
+        {"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params},
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        msg = _dx_read_locked(proc, max(0.2, deadline - time.time()), slot.buf)
+        if msg.get("id") == msg_id:
+            return msg
+    raise TimeoutError("DX adaptor timed out")
 
 
 def _dx_rpc_locked(proc: subprocess.Popen, method: str, params: dict, timeout: float) -> dict:
@@ -1849,27 +2005,34 @@ def _dx_rpc_locked(proc: subprocess.Popen, method: str, params: dict, timeout: f
 
 
 def _dx_server_names() -> tuple[str, ...]:
-    # One provider. google-workspace and google_workspace each open another login.
-    if "google-workspace-rw" in _DX_SERVER_SKIP:
-        return ()
-    return ("google-workspace-rw",)
+    # One Google login. google-workspace-rw is the Sign in button; some Macs only have google-workspace.
+    return ("google-workspace-rw", "google-workspace")
 
 
-def _dx_ensure_locked(timeout: float) -> subprocess.Popen:
-    global _DX_PROC, _DX_SERVER
-    proc = _DX_PROC
-    if proc and proc.poll() is None and _DX_TOOLS:
-        return proc
-    _dx_stop_locked()
+def _dx_sync_google_globals(slot: _DxSlot) -> None:
+    global _DX_PROC, _DX_TOOLS, _DX_SERVER
+    _DX_PROC = slot.proc
+    _DX_TOOLS = slot.tools
+    _DX_SERVER = slot.server
+    _DX_BUF.clear()
+    _DX_BUF.extend(slot.buf)
+
+
+def _dx_ensure_slot(slot: _DxSlot, servers: tuple[str, ...], timeout: float, label: str) -> subprocess.Popen:
+    if slot.ready():
+        return slot.proc  # type: ignore[return-value]
+    slot.stop()
     binary = find_mcp_adaptor_bin()
     if not binary:
         raise RuntimeError("DX adaptor is not installed on this machine")
     env = dict(os.environ)
     env.setdefault("MCP_ADAPTOR_ENV", "prod")
+    # DevBar's 13316 proxy is a session. Keyring tokens survive Chrome restart.
+    env["MCP_ADAPTOR_PASSTHROUGH"] = "off"
     last = ""
-    for server in _dx_server_names():
-        if _DX_PROC and _DX_PROC.poll() is None and _DX_TOOLS:
-            return _DX_PROC
+    for server in servers:
+        if not server:
+            continue
         proc = subprocess.Popen(
             [binary, "serve", "--server", server, "--log-level", "error"],
             stdin=subprocess.PIPE,
@@ -1878,6 +2041,9 @@ def _dx_ensure_locked(timeout: float) -> subprocess.Popen:
             env=env,
             bufsize=0,
         )
+        slot.proc = proc
+        slot.buf.clear()
+        slot.seq = 10
         try:
             _dx_send_locked(
                 proc,
@@ -1892,11 +2058,11 @@ def _dx_ensure_locked(timeout: float) -> subprocess.Popen:
                     },
                 },
             )
-            init = _dx_read_locked(proc, timeout)
+            init = _dx_read_locked(proc, timeout, slot.buf)
             if init.get("error"):
-                raise RuntimeError("DX adaptor did not accept the Google login")
+                raise RuntimeError("DX adaptor did not accept the " + label + " login")
             _dx_send_locked(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
-            listed = _dx_rpc_locked(proc, "tools/list", {}, timeout)
+            listed = _dx_rpc_on(slot, "tools/list", {}, timeout)
             tools = ((listed.get("result") or {}).get("tools") or []) if isinstance(listed, dict) else []
             mapped: dict[str, str] = {}
             for tool in tools:
@@ -1906,43 +2072,93 @@ def _dx_ensure_locked(timeout: float) -> subprocess.Popen:
                 if name:
                     mapped[name] = name
             if not mapped:
-                raise RuntimeError("DX adaptor listed no Google tools")
-            _DX_TOOLS.clear()
-            _DX_TOOLS.update(mapped)
-            _DX_PROC = proc
-            _DX_SERVER = server
+                raise RuntimeError("DX adaptor listed no " + label + " tools")
+            slot.tools = mapped
+            slot.server = server
             return proc
         except Exception as exc:
             last = str(exc) or last
-            _DX_SERVER_SKIP.add(server)
-            if _DX_SERVER == server:
-                _DX_SERVER = ""
-            proc.kill()
-            _DX_BUF.clear()
-    raise RuntimeError(last or "DX adaptor did not accept the Google login")
+            slot.stop()
+    raise RuntimeError(last or ("DX adaptor did not accept the " + label + " login"))
 
 
-def _dx_tool_name(wanted: str) -> str:
-    if wanted in _DX_TOOLS:
+def _dx_ensure_locked(timeout: float) -> subprocess.Popen:
+    global _DX_PROC, _DX_SERVER
+    with _GOOGLE_DX.lock:
+        proc = _dx_ensure_slot(_GOOGLE_DX, _dx_server_names(), timeout, "Google")
+        _dx_sync_google_globals(_GOOGLE_DX)
+        return proc
+
+
+def _dx_tool_name_in(tools: dict[str, str], wanted: str) -> str:
+    if wanted in tools:
         return wanted
     suffix = "_" + wanted
-    for name in _DX_TOOLS:
+    for name in tools:
         if name.endswith(suffix) or name.endswith("/" + wanted):
             return name
     return wanted
 
 
+def _dx_tool_name(wanted: str) -> str:
+    return _dx_tool_name_in(_DX_TOOLS, wanted)
+
+
 def dx_google_tools_call(name: str, arguments: dict, timeout: float = 30) -> str:
-    with _DX_LOCK:
-        proc = _dx_ensure_locked(timeout)
-        tool = _dx_tool_name(name)
-        result = _dx_rpc_locked(
-            proc,
+    with _GOOGLE_DX.lock:
+        _dx_ensure_slot(_GOOGLE_DX, _dx_server_names(), timeout, "Google")
+        _dx_sync_google_globals(_GOOGLE_DX)
+        tool = _dx_tool_name_in(_GOOGLE_DX.tools, name)
+        result = _dx_rpc_on(
+            _GOOGLE_DX,
             "tools/call",
             {"name": tool, "arguments": arguments or {}},
             timeout,
         )
     return mcp_tools_text(result) or "ok"
+
+
+def dx_gus_tools_call(name: str, arguments: dict, timeout: float = 30) -> str:
+    with _GUS_DX.lock:
+        _dx_ensure_slot(_GUS_DX, ("gus",), timeout, "GUS")
+        tool = _dx_tool_name_in(_GUS_DX.tools, name)
+        result = _dx_rpc_on(
+            _GUS_DX,
+            "tools/call",
+            {"name": tool, "arguments": arguments or {}},
+            timeout,
+        )
+    return mcp_tools_text(result) or "ok"
+
+
+def dx_slot_usable(server: str, timeout: float = 8) -> bool:
+    """True when stored keyring tokens can start this MCP. Never opens a browser."""
+    global _GOOGLE_DX_OK, _GUS_DX_OK
+    now = time.time()
+    cached = _DX_USABLE_CACHE.get(server)
+    if cached and now - cached[0] < 45:
+        return cached[1]
+    slot = _dx_slot_for(server)
+    if slot.ready():
+        _DX_USABLE_CACHE[server] = (now, True)
+        return True
+    servers = _dx_server_names() if str(server).startswith("google") else (server,)
+    refresh_gateway_login()
+    label = "Google" if str(server).startswith("google") else "GUS"
+    try:
+        with slot.lock:
+            _dx_ensure_slot(slot, servers, timeout, label)
+        if slot is _GOOGLE_DX:
+            _dx_sync_google_globals(slot)
+            _GOOGLE_DX_OK = True
+        else:
+            _GUS_DX_OK = True
+        remember_dx_login(server)
+        _DX_USABLE_CACHE[server] = (now, True)
+        return True
+    except Exception:
+        _DX_USABLE_CACHE[server] = (now, False)
+        return False
 
 
 def discover_mcp_servers(runner: str = "") -> dict[str, dict]:
@@ -2473,6 +2689,8 @@ def reset_google_fallback() -> None:
 
 
 def _dx_session_ready() -> bool:
+    if _GOOGLE_DX.ready():
+        return True
     proc = _DX_PROC
     return bool(proc and proc.poll() is None and _DX_TOOLS)
 
@@ -2604,14 +2822,18 @@ def mcp_call(name: str, arguments: dict) -> str:
     """Gmail and Calendar through the session that is already signed in.
 
     A fetch never opens a browser. Three calls in one run share one session.
-    Sign-in is only the panel button.
+    Sign-in is only the panel button. The next Chrome session reuses the keyring.
     """
-    if _dx_session_ready():
-        return dx_google_tools_call(name, arguments)
+    if _dx_session_ready() or _GOOGLE_DX_OK:
+        try:
+            return dx_google_tools_call(name, arguments)
+        except Exception:
+            if _dx_session_ready():
+                raise
     try:
         return google_workspace_call(name, arguments)
     except Exception as primary:
-        if _GOOGLE_DX_OK or _dx_session_ready():
+        if dx_slot_usable("google-workspace-rw"):
             try:
                 return dx_google_tools_call(name, arguments)
             except Exception as exc:
@@ -2671,6 +2893,12 @@ def mcp_call_named(names: tuple[str, ...], tool: str, arguments: dict, timeout: 
     if any(str(name).lower() in orgcs_names for name in names) and tool in {"getUserInfo", "soqlQuery"}:
         if _ORGCS_BROWSER_SID:
             return orgcs_browser_call(tool, arguments, timeout)
+    gus_names = {item.lower() for item in names}
+    if gus_names & {"gus", "gus_server", "gus-server"}:
+        try:
+            return dx_gus_tools_call(tool, arguments, timeout)
+        except Exception as exc:
+            last = last or exc
     if last is not None:
         raise last
     raise RuntimeError("unavailable")
@@ -4117,7 +4345,7 @@ def _parse_slack_search(
             label = "DM"
         else:
             shown = f"#{channel}" if channel else ""
-            label = f"{who or 'Slack'} — {shown}" if shown else (who or "Slack")
+            label = shown or "Slack"
             channel = shown or channel
         if not url and cid:
             url = f"https://salesforce.enterprise.slack.com/archives/{cid}"
@@ -5836,10 +6064,56 @@ _UNLOADED_PEEK_RE = re.compile(
 )
 
 
+def _inbox_slack_meta() -> dict[str, dict]:
+    """id → channel/peer from planner-inbox.txt when the overlay dropped those fields."""
+    found: dict[str, dict] = {}
+    try:
+        text = PLANNER_INBOX_TXT.read_text(encoding="utf-8")
+    except OSError:
+        return found
+    for block in re.split(r"\n(?=## slack )", text or ""):
+        ident = re.search(r"## slack (\S+)", block)
+        if not ident:
+            continue
+        row: dict = {}
+        for key in ("channel", "peer", "channelId", "from"):
+            match = re.search(rf"(?m)^- {key}: (.*)$", block)
+            val = (match.group(1) if match else "").strip()
+            if val:
+                row[key] = val
+        if row:
+            found[ident.group(1)] = row
+    return found
+
+
+def _enrich_slack_card(it: dict, data: dict) -> None:
+    """Keep #channel / peer from the fetch when the inbox pass only copied from."""
+    ident = str(it.get("id") or "")
+    cid = str(it.get("channelId") or "")
+    best = None
+    for row in data.get("slackCandidates") or []:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get("id") or "")
+        if ident and rid == ident:
+            best = row
+            break
+        if cid and str(row.get("channelId") or "") == cid:
+            best = row
+    clip = _inbox_slack_meta().get(ident) if ident else None
+    for src in (best, clip):
+        if not isinstance(src, dict):
+            continue
+        for key in ("channel", "channelId", "peer", "threadTs", "openedClip", "lastHuman", "lastHumanIsMe"):
+            if it.get(key) in (None, "") and src.get(key) not in (None, ""):
+                it[key] = src[key]
+
+
 def _finish_slack_card(it: dict, data: dict) -> None:
-    """Header is the person or channel. Peek holds the message. Completed rows stay out."""
+    """Header is the other person or #channel. Peek holds the message. Completed rows stay out."""
     sanit = _sanitize_mod()
     it["kind"] = "slack"
+    _enrich_slack_card(it, data)
     sanit.relabel_slack_dms({"sections": [{"title": "Slack", "items": [it]}], "name": data.get("name"), "manager": data.get("manager")})
     if sanit.slack_copy_is_placeholder(it.get("detail")):
         it["detail"] = ""
@@ -6301,6 +6575,8 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
             "id": row.get("id") or "",
             "kind": "slack",
             "label": str(row.get("label") or "Slack")[:140],
+            "from": row.get("from") or "",
+            "peer": row.get("peer") or "",
             "slackUrl": row.get("slackUrl") or "",
             "channelId": row.get("channelId") or "",
             "channel": row.get("channel") or "",
@@ -6566,7 +6842,7 @@ Slack:
 - Drop FYI, huddle over, and thanks that say they will update the customer.
 - Not opened = unread and still yours. Needs a reply = opened and the loop is still open.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
-- DM label is "{peer} (DM)". Channel label is the person and #channel. Do not put the message in the label or in detail. The message belongs in peek. One card per person. One card per channel. One card per thread.
+- DM label is "{peer} (DM)". Channel and thread label is #channel. Never this engineer's name. Do not put the message in the label or in detail. The message belongs in peek. One card per person. One card per channel. One card per thread.
 
 Mail:
 - Drop done:true.
@@ -6581,7 +6857,7 @@ Mail:
 Write {"inboxReviewed": true, "slack": {"groups": [...]}, "mail": {"groups": [...]}}.
 Group titles are only "Not opened" or "Needs a reply".
 Each group is {"title": "...", "items": [...]}. The array key is items.
-Each kept row copies id, label, slackUrl or mailUrl, channelId, ts, from, unread from the clip.
+Each kept row copies id, label, slackUrl or mailUrl, channelId, channel, ts, from, unread from the clip. For a channel or thread, label is #channel even when from is this engineer.
 slackBucket is "unread" or "reply". mailBucket is "unread" or "reply".
 You write the Peek. Each kept row has detail (one sentence) and peek {"summary": "2-4 sentences"}. Say what the thread or mail is about and what is still open. Plain sentences. Do not paste the clip, JSON, "Message TS", user ids, or mail headers.
 Omit every dropped row. Empty groups are allowed only when every clip was a drop.
@@ -9615,14 +9891,14 @@ def omni_in_adherence(label: str, kinds: list[str]) -> bool:
     In adherence = Screen Sharing (any block, never OOA) or the status for
     the Assembled block covering now. Work: Available* / Chat Online that
     includes that channel (combos count). Chat and Messaging are the same
-    channel. Lunch / Break / Dinner: that meal
-    label, or Offline / no Omni row / End of Work. Busy is never in
+    channel. Lunch / Break / Dinner: every Omni status counts, including
+    Available, Busy, Lunch, Offline, and no row. Busy is never in
     adherence on a work block.
     """
+    if omni_meal_only(kinds):
+        return True
     low = (label or "").strip().lower()
     if re.search(r"screen[\s-]*sharing", low):
-        return True
-    if omni_meal_only(kinds) and omni_is_offline_status(label):
         return True
     if not low:
         return False
@@ -9631,13 +9907,7 @@ def omni_in_adherence(label: str, kinds: list[str]) -> bool:
     if not kinds:
         return False
     tokens = omni_label_tokens(low)
-    meal = [kind for kind in kinds if kind in OMNI_MEAL_KINDS]
     work = [kind for kind in kinds if kind in OMNI_WORK_KINDS]
-    if meal and not work:
-        need: set[str] = set()
-        for kind in meal:
-            need |= OMNI_KIND_TOKENS[kind]
-        return bool(tokens & need)
     if not work or not omni_is_available_style(low):
         return False
     for kind in work:
@@ -9648,14 +9918,7 @@ def omni_in_adherence(label: str, kinds: list[str]) -> bool:
 
 def omni_out_of_adherence(records: list, kinds: list[str]) -> bool:
     if omni_meal_only(kinds):
-        if not records:
-            return False
-        rec = records[0] if isinstance(records[0], dict) else {}
-        status = rec.get("ServicePresenceStatus") if isinstance(rec.get("ServicePresenceStatus"), dict) else {}
-        label = str(status.get("MasterLabel") or rec.get("MasterLabel") or "").strip()
-        if omni_is_offline_status(label):
-            return False
-        return not omni_in_adherence(label, kinds)
+        return False
     if not records:
         return True
     rec = records[0] if isinstance(records[0], dict) else {}

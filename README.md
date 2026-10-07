@@ -1,6 +1,6 @@
 # HeadStart
 
-Chrome extension for an engineer’s shift. Version **0.2.4.11 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.4.13 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
