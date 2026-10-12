@@ -321,6 +321,7 @@ except Exception:
     pass
 sanitize.drop_gus_notices_from_slack(data)
 sanitize.ensure_gus_bot_rows(data)
+sanitize.fill_gus_item_peeks(data)
 sanitize.omit_done_inbox_rows(data)
 sanitize.ensure_required_sections(data)
 sanitize.drop_empty_optional_sections(data)

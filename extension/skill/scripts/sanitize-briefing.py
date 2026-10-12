@@ -2823,6 +2823,148 @@ def ensure_gus_bot_rows(data: dict) -> None:
         sec.pop("empty", None)
 
 
+_LAP_MAIL_STUB = "LAP-BlackTab-Bot mentioned you."
+_FEED_ID_RE = re.compile(r"(0D5[A-Za-z0-9]{12,15})")
+
+
+def _peek_text(text: object, n: int = 400) -> str:
+    s = _plain_gus_text(str(text or ""))
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s).strip(" -–—")
+    if len(s) <= n:
+        return s
+    return s[: n - 1].rstrip() + "…"
+
+
+def _feed_id_from_url(url: object) -> str:
+    found = _FEED_ID_RE.search(str(url or ""))
+    return found.group(1) if found else ""
+
+
+def _gus_feed_clip(clips: dict, fid: str) -> dict | None:
+    if not fid or not isinstance(clips, dict):
+        return None
+    hit = clips.get(fid)
+    if isinstance(hit, dict):
+        return hit
+    prefix = fid[:15]
+    for key, val in clips.items():
+        if str(key).startswith(prefix) and isinstance(val, dict):
+            return val
+    return None
+
+
+def _chrono_has_text(chrono: object) -> bool:
+    if not isinstance(chrono, list):
+        return False
+    for ev in chrono:
+        if isinstance(ev, str) and ev.strip():
+            return True
+        if isinstance(ev, dict) and _peek_text(
+            ev.get("text") or ev.get("body") or ev.get("label") or ""
+        ):
+            return True
+    return False
+
+
+def _fill_one_gus_peek(it: dict, clips: dict) -> None:
+    """GUS Peek is this row's work / chatter / mention — not a case-number peek."""
+    if str(it.get("detail") or "").strip() == _LAP_MAIL_STUB:
+        label = str(it.get("label") or "").strip()
+        if label and not re.match(r"LAP-BlackTab", label, re.I):
+            it["detail"] = label if label.endswith(".") else label + "."
+    existing = it.get("peek") if isinstance(it.get("peek"), dict) else {}
+    summary = _peek_text(existing.get("summary") or it.get("summary") or "", 220)
+    chrono = existing.get("chronology") if isinstance(existing.get("chronology"), list) else []
+    if not _chrono_has_text(chrono):
+        chrono = []
+    clip = _gus_feed_clip(clips, _feed_id_from_url(it.get("gusUrl")))
+    if isinstance(clip, dict):
+        body = _peek_text(clip.get("text") or "", 400)
+        if body and not summary:
+            summary = body[:220]
+        if body and not chrono:
+            chrono = [
+                {
+                    "kind": "chatter",
+                    "who": str(clip.get("who") or "")[:80],
+                    "when": str(clip.get("when") or "")[:32],
+                    "text": body,
+                }
+            ]
+        for row in (clip.get("comments") or [])[:6]:
+            if not isinstance(row, dict):
+                continue
+            note = _peek_text(row.get("text") or "", 400)
+            if not note:
+                continue
+            chrono.append(
+                {
+                    "kind": "chatter",
+                    "who": str(row.get("who") or "")[:80],
+                    "when": str(row.get("when") or "")[:32],
+                    "text": note,
+                }
+            )
+            if not summary:
+                summary = note[:220]
+    if not summary:
+        detail = _peek_text(it.get("detail") or "", 220)
+        status = _peek_text(it.get("status") or "", 80)
+        subject = _peek_text(it.get("subject") or "", 120)
+        update = _peek_text(it.get("update") or it.get("chatter") or "", 180)
+        label = _peek_text(it.get("label") or "", 140)
+        if detail:
+            summary = detail
+            if status and status.lower() not in detail.lower():
+                summary = (status + " · " + summary)[:220]
+        elif status or subject:
+            summary = " · ".join(part for part in (status, subject) if part)[:220]
+        elif update:
+            summary = update[:220]
+        else:
+            summary = label
+    if not _chrono_has_text(chrono):
+        beat = _peek_text(
+            it.get("update")
+            or it.get("chatter")
+            or it.get("snippet")
+            or it.get("openedClip")
+            or it.get("detail")
+            or summary,
+            400,
+        )
+        if beat:
+            kind = "chatter" if (it.get("update") or it.get("chatter") or clip) else "gus"
+            chrono = [
+                {
+                    "kind": kind,
+                    "who": "",
+                    "when": str(it.get("modified") or it.get("due") or "")[:32],
+                    "text": beat,
+                }
+            ]
+    if not summary and not chrono:
+        return
+    it["summary"] = summary
+    it["peek"] = {"summary": summary, "chronology": chrono[:10]}
+
+
+def fill_gus_item_peeks(data: dict) -> None:
+    """Attach Peek summary + chronology on every GUS card, including leftover mail."""
+    if not isinstance(data, dict):
+        return
+    gather = _load_planner_gather()
+    clips = gather.get("gusFeedClips") if isinstance(gather.get("gusFeedClips"), dict) else {}
+    for sec in data.get("sections") or []:
+        if not isinstance(sec, dict):
+            continue
+        if not re.match(r"^gus\b", _section_key(sec.get("title")), re.I):
+            continue
+        for it in _walk_items_sec(sec):
+            _fill_one_gus_peek(it, clips)
+
+
 def _notice_ids(text: str) -> tuple[set[str], set[str]]:
     raw = _plain_gus_text(text)
     works = set(re.findall(r"W-\d+", raw, re.I))
@@ -2921,9 +3063,49 @@ def _mail_notice_time(mail: dict) -> float:
         return 0.0
 
 
+def _is_lap_blacktab_mail(blob: str) -> bool:
+    if not re.search(r"LAP-BlackTab", blob, re.I):
+        return False
+    return bool(_lap_case_num(blob) or re.search(r"Case Number:\s*\d+", blob, re.I))
+
+
+def _gus_chatter_mail_item(mail: dict) -> dict:
+    """GUS Chatter 'mentioned you' mail that is not a parsed LAP-BlackTab case."""
+    blob = _mail_notice_blob(mail)
+    label, detail, gus_url = _gus_notice_copy(blob, str(mail.get("from") or ""))
+    subj = str(mail.get("label") or "").strip()
+    if re.search(r"mentioned you", subj, re.I):
+        label = subj[:140]
+        if not _peek_text(detail) or detail == _LAP_MAIL_STUB:
+            detail = subj if subj.endswith(".") else subj + "."
+    item = {
+        "id": "gusmail-" + (re.sub(r"[^A-Za-z0-9]", "", str(mail.get("id") or ""))[:24] or "chatter"),
+        "kind": "gus",
+        "label": label[:140],
+        "detail": (detail or label)[:220],
+        "mailUrl": _gus_mail_url(mail),
+    }
+    snippet = _peek_text(mail.get("openedClip") or mail.get("snippet") or "", 400)
+    if snippet:
+        item["snippet"] = snippet
+    if gus_url:
+        item["gusUrl"] = gus_url
+    else:
+        gus_m = re.search(
+            r"https://gus\.(?:my|lightning)\.salesforce\.com/[A-Za-z0-9/]+",
+            blob,
+            re.I,
+        )
+        if gus_m:
+            item["gusUrl"] = gus_m.group(0)
+    return item
+
+
 def _lap_mail_item(mail: dict) -> dict:
     """One GUS row for a LAP-BlackTab-Bot mention that matched no open work item."""
     blob = _mail_notice_blob(mail)
+    if not _is_lap_blacktab_mail(blob):
+        return _gus_chatter_mail_item(mail)
     num = _lap_case_num(blob)
     status_m = re.search(
         r"Status:\s*(.+?)(?:\s+More information|\s+Thank you!|\s+View post|$)",
@@ -2944,13 +3126,13 @@ def _lap_mail_item(mail: dict) -> dict:
         re.I,
     )
     end = end_m.group(1).strip() if end_m else ""
-    gus_m = re.search(r"https://gus\.my\.salesforce\.com/[A-Za-z0-9]+", blob)
+    gus_m = re.search(r"https://gus\.(?:my|lightning)\.salesforce\.com/[A-Za-z0-9]+", blob, re.I)
     if num and status:
         label = f"LAP {num} · {status}"
     elif num:
         label = f"LAP {num}"
     else:
-        label = str(mail.get("label") or "LAP-BlackTab-Bot")
+        return _gus_chatter_mail_item(mail)
     bits = []
     if company and subject:
         bits.append(f"{company} — {subject}.")
@@ -2962,13 +3144,16 @@ def _lap_mail_item(mail: dict) -> dict:
         bits.append(f"End {end} UTC has passed.")
     if re.search(r"passed the end|assigned owner|manual revert", blob, re.I):
         bits.append("You own it. Revert the org value off-peak, or close it after an extension.")
+    snippet = _peek_text(mail.get("openedClip") or mail.get("snippet") or "", 400)
     item = {
         "id": "gusmail-" + (num or re.sub(r"[^A-Za-z0-9]", "", str(mail.get("id") or ""))[:24] or "lap"),
         "kind": "gus",
         "label": label[:140],
-        "detail": (" ".join(bits) or "LAP-BlackTab-Bot mentioned you.")[:220],
+        "detail": (" ".join(bits) or label)[:220],
         "mailUrl": _gus_mail_url(mail),
     }
+    if snippet:
+        item["snippet"] = snippet
     if gus_m:
         item["gusUrl"] = gus_m.group(0)
     return item
@@ -5647,4 +5832,5 @@ def sanitize(data: dict) -> dict:
     omit_done_inbox_rows(data)
     drop_gus_notices_from_slack(data)
     ensure_gus_bot_rows(data)
+    fill_gus_item_peeks(data)
     return data

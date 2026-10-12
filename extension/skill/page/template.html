@@ -3529,7 +3529,6 @@
         if (k === "slack" || k === "mail" || k === "email" || k === "gmail" || id.indexOf("slack-") === 0 || id.indexOf("mail-") === 0) {
           return !!((item.peek && item.peek.summary) || item.detail || item.snippet || item.openedClip);
         }
-        if (item.gusBot === true) return false;
         if (k === "meeting" || k === "assembled" || k === "slack" || k === "mail" || k === "invite" || k === "fyi") return false;
         if (item.eventId || item.htmlLink || item.invite === true) return false;
         return k === "case" || k === "gus" || !!(item.caseUrl || item.gusUrl || item.workId || item.caseNumber);
@@ -5181,6 +5180,7 @@
           });
         }
         addParas((raw.peek && raw.peek.summary) || raw.summary);
+        var isGus = k === "gus" || !!raw.gusUrl || !!raw.workId || !!raw.gusBot;
         if (inbox) {
           paras = [];
           seenPara = {};
@@ -5189,6 +5189,9 @@
           if (blob) paras.push(blob);
         } else {
           if (!paras.length) addParas(raw.detail);
+          if (isGus && !paras.length) addParas(raw.status);
+          if (isGus && !paras.length) addParas(raw.update || raw.chatter || raw.snippet);
+          if (isGus && !paras.length) addParas(raw.label);
         }
         var html = "";
         html += '<p class="peek-h">' + (inbox ? "Message" : "Summary") + "</p>";
@@ -5202,6 +5205,10 @@
         if (!inbox) {
         html += '<p class="peek-h">Chronology</p>';
         var chrono = peekChronoList(raw);
+        if (isGus && !chrono.length) {
+          var beat = peekClean(raw.update || raw.chatter || raw.snippet || raw.detail || (paras[0] || ""));
+          if (beat) chrono = [{ when: raw.modified || "", who: "", kind: "gus", text: beat }];
+        }
         if (chrono.length) {
           html += '<ol class="peek-chrono">';
           chrono.forEach(function (ev) {
