@@ -15,11 +15,12 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
 CHROME_EXTENSION_ID = "ojpfakkcgmefanbomdfpglbioapoabfh"
-HOST_LOGIC_VERSION = 7
+HOST_LOGIC_VERSION = 8
 
 
 def read_msg():
@@ -868,12 +869,47 @@ def _pid_alive(pidfile: pathlib.Path) -> bool:
     return True
 
 
+def _logout_chime_path() -> str:
+    for name in ("Sosumi.aiff", "Glass.aiff", "Ping.aiff"):
+        path = pathlib.Path("/System/Library/Sounds") / name
+        if path.is_file():
+            return str(path)
+    return ""
+
+
+def _logout_sound_loop(stop: threading.Event) -> None:
+    """Keep chiming until the logout dialog is dismissed. display dialog is silent."""
+    path = _logout_chime_path()
+    while not stop.is_set():
+        try:
+            if path:
+                subprocess.call(
+                    ["afplay", path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                )
+            else:
+                subprocess.call(
+                    ["osascript", "-e", "beep 2"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        stop.wait(1.6)
+
+
 def _logout_dialog_worker(title: str, message: str, key: str) -> None:
     folder = support_dir()
     stamp = folder / f"logout-ack-{key}"
     pidfile = folder / f"logout-dialog-{key}.pid"
+    stop = threading.Event()
+    noise = threading.Thread(target=_logout_sound_loop, args=(stop,), daemon=True)
     try:
         pidfile.write_text(str(os.getpid()), encoding="utf-8")
+        noise.start()
         code = subprocess.call(
             [
                 "osascript",
@@ -889,6 +925,7 @@ def _logout_dialog_worker(title: str, message: str, key: str) -> None:
         if code == 0:
             stamp.write_text("ok", encoding="utf-8")
     finally:
+        stop.set()
         try:
             pidfile.unlink()
         except OSError:
