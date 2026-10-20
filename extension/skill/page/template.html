@@ -2391,6 +2391,37 @@
         el.innerHTML = '<span class="clock-time">' + esc(p.time) + "</span>"
           + '<span class="clock-date">' + esc(p.date) + "</span>";
       }
+      var plannerRunLive = false;
+      function usageNum(v) {
+        var n = Number(v);
+        return isFinite(n) && n > 0 ? Math.round(n) : 0;
+      }
+      function formatRunTokens(n) {
+        var x = usageNum(n);
+        try {
+          return x.toLocaleString("en-US") + (x === 1 ? " token" : " tokens");
+        } catch (e) {
+          return String(x) + (x === 1 ? " token" : " tokens");
+        }
+      }
+      function formatRunCost(n) {
+        var x = Number(n);
+        if (!isFinite(x) || x < 0) x = 0;
+        if (x > 0 && x < 0.01) return "$" + x.toFixed(4);
+        return "$" + x.toFixed(2);
+      }
+      function paintRunUsage() {
+        var el = document.getElementById("run-usage-clock");
+        if (!el) return;
+        var u = plannerRunLive ? {} : ((data && data.runUsage) || {});
+        var tokens = usageNum(u.totalTokens);
+        if (!tokens) {
+          tokens = usageNum(u.inputTokens) + usageNum(u.outputTokens)
+            + usageNum(u.cacheReadTokens) + usageNum(u.cacheWriteTokens);
+        }
+        el.innerHTML = '<span class="clock-time">' + esc(formatRunTokens(tokens)) + "</span>"
+          + '<span class="clock-date">' + esc(formatRunCost(u.costUsd)) + "</span>";
+      }
       function refreshedDate() {
         var p = parseStampLabel(data.stamp);
         if (!p) return null;
@@ -2820,6 +2851,7 @@
       if (refreshed) {
         clocks += '<div class="clock"><span class="clock-k">Refreshed</span><span class="clock-v" id="refreshed-clock">' + esc(data.stamp || "") + "</span></div>";
       }
+      clocks += '<div class="clock"><span class="clock-k">This run</span><span class="clock-v" id="run-usage-clock"></span></div>';
       clocks += '<div class="clock live"><span class="clock-k">Now</span><span class="clock-v" id="now-clock"></span></div></div>';
       metaBits.push(clocks);
       var counts = [];
@@ -2827,6 +2859,7 @@
       counts.push(statHtml("Need you", "—", "", "stat-need"));
       metaBits.push('<div class="counts">' + counts.join("") + "</div>");
       document.getElementById("meta").innerHTML = metaBits.join("");
+      paintRunUsage();
       var factList = (data.facts || []).filter(function (f) { return String(f || "").replace(/[_*\s]/g, ""); });
       var factTiles = factList.map(factParts).filter(function (p) {
         if (!p || !p.label) return false;
@@ -6132,14 +6165,36 @@
           fetch("/plan/status", { signal: AbortSignal.timeout(2000) })
             .then(function (r) { return r.json(); })
             .then(function (st) {
-              if (!st || st.state !== "ok" || !st.finishedAt) return;
-              if (!Date.parse(st.finishedAt)) return;
+              var live = !!(st && (st.state === "running" || st.canStop === true));
+              if (live) {
+                if (!plannerRunLive) {
+                  plannerRunLive = true;
+                  paintRunUsage();
+                }
+                return;
+              }
+              if (!st || st.state !== "ok" || !st.finishedAt || !Date.parse(st.finishedAt)) {
+                if (plannerRunLive) {
+                  plannerRunLive = false;
+                  paintRunUsage();
+                }
+                return;
+              }
               var seen = "";
               try { seen = sessionStorage.getItem(key) || ""; } catch (e) {}
-              if (st.finishedAt === seen) return;
+              if (st.finishedAt === seen) {
+                if (plannerRunLive) {
+                  plannerRunLive = false;
+                  paintRunUsage();
+                }
+                return;
+              }
               loadPublishedPage().then(function (ok) {
-                if (ok !== true) return;
-                try { sessionStorage.setItem(key, st.finishedAt); } catch (e2) {}
+                plannerRunLive = false;
+                if (ok === true) {
+                  try { sessionStorage.setItem(key, st.finishedAt); } catch (e2) {}
+                }
+                paintRunUsage();
               });
             })
             .catch(function () {});
