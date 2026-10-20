@@ -501,6 +501,22 @@
     }
     .stat.ok .stat-k,
     .stat.ok .stat-v { color: var(--ok-text); }
+    #stat-run { min-width: 6.75rem; }
+    #stat-run .stat-v {
+      font-size: 14px;
+      letter-spacing: -0.02em;
+      white-space: nowrap;
+    }
+    .stat-sub {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      font-weight: 550;
+      line-height: 1.25;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
     .facts {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
@@ -2411,16 +2427,23 @@
         return "$" + x.toFixed(2);
       }
       function paintRunUsage() {
-        var el = document.getElementById("run-usage-clock");
-        if (!el) return;
-        var u = plannerRunLive ? {} : ((data && data.runUsage) || {});
+        var u = (plannerRunLive || (data && data.unpublished)) ? {} : ((data && data.runUsage) || {});
         var tokens = usageNum(u.totalTokens);
         if (!tokens) {
           tokens = usageNum(u.inputTokens) + usageNum(u.outputTokens)
             + usageNum(u.cacheReadTokens) + usageNum(u.cacheWriteTokens);
         }
-        el.innerHTML = '<span class="clock-time">' + esc(formatRunTokens(tokens)) + "</span>"
-          + '<span class="clock-date">' + esc(formatRunCost(u.costUsd)) + "</span>";
+        var tokenText = formatRunTokens(tokens);
+        var costText = formatRunCost(u.costUsd);
+        var clock = document.getElementById("run-usage-clock");
+        if (clock) {
+          clock.innerHTML = '<span class="clock-time">' + esc(tokenText) + "</span>"
+            + '<span class="clock-date">' + esc(costText) + "</span>";
+        }
+        var tile = document.getElementById("stat-run-v");
+        if (tile) tile.textContent = tokenText;
+        var cost = document.getElementById("stat-run-cost");
+        if (cost) cost.textContent = costText;
       }
       function refreshedDate() {
         var p = parseStampLabel(data.stamp);
@@ -2851,12 +2874,18 @@
       if (refreshed) {
         clocks += '<div class="clock"><span class="clock-k">Refreshed</span><span class="clock-v" id="refreshed-clock">' + esc(data.stamp || "") + "</span></div>";
       }
-      clocks += '<div class="clock"><span class="clock-k">This run</span><span class="clock-v" id="run-usage-clock"></span></div>';
       clocks += '<div class="clock live"><span class="clock-k">Now</span><span class="clock-v" id="now-clock"></span></div></div>';
       metaBits.push(clocks);
       var counts = [];
       counts.push(statHtml("Open", "—", "", "stat-open"));
       counts.push(statHtml("Need you", "—", "", "stat-need"));
+      counts.push(
+        '<div class="stat" id="stat-run">'
+        + '<span class="stat-k">This run</span>'
+        + '<span class="stat-v" id="stat-run-v">0 tokens</span>'
+        + '<span class="stat-sub" id="stat-run-cost">$0.00</span>'
+        + "</div>"
+      );
       metaBits.push('<div class="counts">' + counts.join("") + "</div>");
       document.getElementById("meta").innerHTML = metaBits.join("");
       paintRunUsage();
@@ -5559,6 +5588,7 @@
         if (changed) persistBriefing().catch(function () {});
       })();
       renderApp();
+      if (data && data.unpublished) showStalePlan(data);
       tickClocks();
       setInterval(tickClocks, 1000);
       setInterval(placeNowLine, 15000);
