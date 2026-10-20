@@ -77,6 +77,7 @@ If this folder is on the Desktop, in Documents, or in Downloads, double-click th
 
 ## What you still set up yourself
 
+- Git
 - Python 3
 - Claude Code, or another runner the panel lists
 - Express LLM Gateway token
