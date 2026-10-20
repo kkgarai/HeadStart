@@ -1,22 +1,24 @@
 # HeadStart
 
-Chrome extension for an engineer’s shift. Version **0.2.6.7 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.6.8 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
-Download the installer for this computer. Do not clone the repository yourself. The installer downloads the rest.
+Download the zip. Do not clone the repository yourself, and do not download an installer on its own. Unzip it, then run the installer for this computer. That installer downloads the rest.
 
 ## Install
 
-Save the installer, then double-click it.
+[![Download](https://img.shields.io/badge/Download-HeadStart--Setup.zip-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.8/HeadStart-Setup.zip)
 
-| This computer | Installer | |
-|---|---|---|
-| Mac | `Setup Mac.command` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup.Mac.command) |
-| Windows | `Setup Windows.bat` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup.Windows.bat) |
-| Linux | `Setup Linux.sh` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup.Linux.sh) |
+The zip contains three installers. Use the one for this computer.
 
-On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
+| This computer | Double-click |
+|---|---|
+| Mac | `Setup Mac.command` |
+| Windows | `Setup Windows.bat` |
+| Linux | `Setup Linux.sh` |
+
+On a Mac, double-click the zip, then double-click `Setup Mac.command`. The first open can be blocked until you right-click that file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
 
 The installer detects this computer. It asks which installed browser to use, downloads HeadStart into `~/HeadStart` (`%USERPROFILE%\HeadStart` on Windows), registers the planner host, and opens that browser’s extensions page. It prints the folder to load. That folder contains `manifest.json`.
 
