@@ -14338,6 +14338,8 @@ def record_cli_result(evt: dict) -> None:
 def _model_rates(model: str) -> tuple[float, float, float, float]:
     """USD per million tokens: input, output, cache read, cache write. Provider list prices."""
     low = str(model or "").lower().replace("_", "-")
+    if "opus-5.5" in low or "opus-5-5" in low:
+        return 4.0, 20.0, 0.20, 5.0
     if "opus-4.1" in low or "opus-4-1" in low or re.search(r"opus-4(?!\.\d|-)", low):
         return 15.0, 75.0, 1.5, 18.75
     if "opus" in low:
@@ -14346,6 +14348,8 @@ def _model_rates(model: str) -> tuple[float, float, float, float]:
         return 0.80, 4.0, 0.08, 1.0
     if "haiku" in low:
         return 1.0, 5.0, 0.10, 1.25
+    if "sonnet-5.5" in low or "sonnet-5-5" in low:
+        return 2.0, 10.0, 0.10, 2.50
     if "sonnet-5" in low:
         return 2.0, 10.0, 0.20, 2.50
     if "sonnet" in low or low in {"sonnet"}:
