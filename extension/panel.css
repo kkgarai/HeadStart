@@ -81,6 +81,13 @@ html, body {
   white-space: nowrap;
 }
 .spacer { flex: 1; }
+.run-usage {
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
 .ver {
   color: var(--muted);
   font-size: 12px;

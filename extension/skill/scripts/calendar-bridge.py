@@ -8643,52 +8643,35 @@ def published_page_is_current() -> bool:
         return False
 
 
-def _header_identity(src: dict) -> dict:
-    out = {}
-    if not isinstance(src, dict):
-        return out
-    for key in ("name", "title", "manager", "timezone", "timezoneShort", "daypart", "daypartLabel"):
-        val = src.get(key)
-        if val:
-            out[key] = val
-    return out
-
-
 def live_page_html() -> bytes:
-    """Always the planner template so This run stays on the header. No published plan → zeros."""
+    if not published_page_is_current():
+        return unpublished_page_html()
     template_path = SKILL_ROOT / "page" / "template.html"
     try:
         template = template_path.read_text(encoding="utf-8")
-    except OSError:
-        return unpublished_page_html()
-    if "__BRIEFING_DATA__" not in template:
-        return unpublished_page_html()
-    loaded: dict = {}
-    try:
-        loaded = load_page_briefing()
-    except Exception:
-        loaded = {}
-    if not isinstance(loaded, dict):
-        loaded = {}
-    if published_page_is_current():
-        data = loaded
+        data = load_page_briefing()
         try:
             _sanitize_mod().fill_gus_item_peeks(data)
         except Exception:
             pass
-    else:
-        data = _header_identity(loaded)
-        data["unpublished"] = True
-    try:
-        _sanitize_mod().stamp_run_usage(data)
+        try:
+            _sanitize_mod().stamp_run_usage(data)
+        except Exception:
+            if not isinstance(data.get("runUsage"), dict):
+                data["runUsage"] = empty_run_usage()
+        if PLAN_ACTIVE.is_set():
+            data["runUsage"] = empty_run_usage()
+        raw = json.dumps(data, ensure_ascii=False)
+        if "</" in raw:
+            raw = raw.replace("</", "<\\/")
+        if "__BRIEFING_DATA__" in template:
+            return template.replace("__BRIEFING_DATA__", raw).encode("utf-8")
     except Exception:
-        data["runUsage"] = empty_run_usage()
-    if PLAN_ACTIVE.is_set() or data.get("unpublished") is True:
-        data["runUsage"] = empty_run_usage()
-    raw = json.dumps(data, ensure_ascii=False)
-    if "</" in raw:
-        raw = raw.replace("</", "<\\/")
-    return template.replace("__BRIEFING_DATA__", raw).encode("utf-8")
+        pass
+    try:
+        return PAGE.read_bytes()
+    except OSError:
+        return unpublished_page_html()
 
 
 def load_live_briefing() -> dict:

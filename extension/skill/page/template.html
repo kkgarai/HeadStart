@@ -501,22 +501,6 @@
     }
     .stat.ok .stat-k,
     .stat.ok .stat-v { color: var(--ok-text); }
-    #stat-run { min-width: 6.75rem; }
-    #stat-run .stat-v {
-      font-size: 14px;
-      letter-spacing: -0.02em;
-      white-space: nowrap;
-    }
-    .stat-sub {
-      display: block;
-      margin-top: 2px;
-      font-size: 12px;
-      font-weight: 550;
-      line-height: 1.25;
-      color: var(--muted);
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-    }
     .facts {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
@@ -2407,44 +2391,6 @@
         el.innerHTML = '<span class="clock-time">' + esc(p.time) + "</span>"
           + '<span class="clock-date">' + esc(p.date) + "</span>";
       }
-      var plannerRunLive = false;
-      function usageNum(v) {
-        var n = Number(v);
-        return isFinite(n) && n > 0 ? Math.round(n) : 0;
-      }
-      function formatRunTokens(n) {
-        var x = usageNum(n);
-        try {
-          return x.toLocaleString("en-US") + (x === 1 ? " token" : " tokens");
-        } catch (e) {
-          return String(x) + (x === 1 ? " token" : " tokens");
-        }
-      }
-      function formatRunCost(n) {
-        var x = Number(n);
-        if (!isFinite(x) || x < 0) x = 0;
-        if (x > 0 && x < 0.01) return "$" + x.toFixed(4);
-        return "$" + x.toFixed(2);
-      }
-      function paintRunUsage() {
-        var u = (plannerRunLive || (data && data.unpublished)) ? {} : ((data && data.runUsage) || {});
-        var tokens = usageNum(u.totalTokens);
-        if (!tokens) {
-          tokens = usageNum(u.inputTokens) + usageNum(u.outputTokens)
-            + usageNum(u.cacheReadTokens) + usageNum(u.cacheWriteTokens);
-        }
-        var tokenText = formatRunTokens(tokens);
-        var costText = formatRunCost(u.costUsd);
-        var clock = document.getElementById("run-usage-clock");
-        if (clock) {
-          clock.innerHTML = '<span class="clock-time">' + esc(tokenText) + "</span>"
-            + '<span class="clock-date">' + esc(costText) + "</span>";
-        }
-        var tile = document.getElementById("stat-run-v");
-        if (tile) tile.textContent = tokenText;
-        var cost = document.getElementById("stat-run-cost");
-        if (cost) cost.textContent = costText;
-      }
       function refreshedDate() {
         var p = parseStampLabel(data.stamp);
         if (!p) return null;
@@ -2879,16 +2825,8 @@
       var counts = [];
       counts.push(statHtml("Open", "—", "", "stat-open"));
       counts.push(statHtml("Need you", "—", "", "stat-need"));
-      counts.push(
-        '<div class="stat" id="stat-run">'
-        + '<span class="stat-k">This run</span>'
-        + '<span class="stat-v" id="stat-run-v">0 tokens</span>'
-        + '<span class="stat-sub" id="stat-run-cost">$0.00</span>'
-        + "</div>"
-      );
       metaBits.push('<div class="counts">' + counts.join("") + "</div>");
       document.getElementById("meta").innerHTML = metaBits.join("");
-      paintRunUsage();
       var factList = (data.facts || []).filter(function (f) { return String(f || "").replace(/[_*\s]/g, ""); });
       var factTiles = factList.map(factParts).filter(function (p) {
         if (!p || !p.label) return false;
@@ -5588,7 +5526,6 @@
         if (changed) persistBriefing().catch(function () {});
       })();
       renderApp();
-      if (data && data.unpublished) showStalePlan(data);
       tickClocks();
       setInterval(tickClocks, 1000);
       setInterval(placeNowLine, 15000);
@@ -6195,36 +6132,14 @@
           fetch("/plan/status", { signal: AbortSignal.timeout(2000) })
             .then(function (r) { return r.json(); })
             .then(function (st) {
-              var live = !!(st && (st.state === "running" || st.canStop === true));
-              if (live) {
-                if (!plannerRunLive) {
-                  plannerRunLive = true;
-                  paintRunUsage();
-                }
-                return;
-              }
-              if (!st || st.state !== "ok" || !st.finishedAt || !Date.parse(st.finishedAt)) {
-                if (plannerRunLive) {
-                  plannerRunLive = false;
-                  paintRunUsage();
-                }
-                return;
-              }
+              if (!st || st.state !== "ok" || !st.finishedAt) return;
+              if (!Date.parse(st.finishedAt)) return;
               var seen = "";
               try { seen = sessionStorage.getItem(key) || ""; } catch (e) {}
-              if (st.finishedAt === seen) {
-                if (plannerRunLive) {
-                  plannerRunLive = false;
-                  paintRunUsage();
-                }
-                return;
-              }
+              if (st.finishedAt === seen) return;
               loadPublishedPage().then(function (ok) {
-                plannerRunLive = false;
-                if (ok === true) {
-                  try { sessionStorage.setItem(key, st.finishedAt); } catch (e2) {}
-                }
-                paintRunUsage();
+                if (ok !== true) return;
+                try { sessionStorage.setItem(key, st.finishedAt); } catch (e2) {}
               });
             })
             .catch(function () {});
