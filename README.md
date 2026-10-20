@@ -8,26 +8,29 @@ Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.
 
 ## Install
 
-Clone the public repository, then load that folder in Chrome. The folder contains `manifest.json`, the three installers, and an `extension` folder with the rest of the files.
+The setup file is in the repository root, next to `manifest.json`, on the `dev` branch.
 
-```bash
-git clone https://github.com/kkgarai/HeadStart.git
-cd HeadStart
-```
+| This computer | Double-click |
+|---|---|
+| Mac | `Setup Mac.command` |
+| Windows | `Setup Windows.bat` |
+| Linux | `Setup Linux.sh` |
 
-1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `HeadStart` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
+Git and Python 3 have to be on the machine already. The setup file does not install them. On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
 
-2. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer. The page lists all three and marks the one for this computer.
+It detects Mac, Windows, or Linux. It does not ask you to pick the computer. It lists the Chromium browsers that can actually open — Chrome, Chrome Beta, Chrome Dev, Chrome Canary, Edge, Brave, Vivaldi, Chromium — and asks which one to use. Safari and Firefox are not offered.
 
-Do the double-click once per machine. After that, the toolbar starts the bridge. Quitting Chrome does not ask for the installer again.
+If you did not start it from a checkout, it clones the `dev` branch into `~/HeadStart` (`%USERPROFILE%\HeadStart` on Windows). It then registers the planner host and opens that browser’s extensions page. The folder to load is printed in the terminal. That folder is the one with `manifest.json`, not the `extension` folder inside it.
 
-If the bridge has stopped, the page sends you back to that folder to double-click the same installer.
+1. In the browser it opened: turn on **Developer mode** → **Load unpacked** → choose the folder it printed.
 
-3. Return to Chrome and click the toolbar icon again. The page asks for the Express token, the model, and the runner.
+2. Click the HeadStart toolbar icon. The page asks for the Express token, the model, and the runner.
 
-### What the installer does
+The browser cannot be given the extension by the script. **Load unpacked** stays that one click.
 
-The installer registers a small local helper so the toolbar can start the planner bridge. It does not install Python, Claude Code, or any login.
+### Host only
+
+When the folder is already cloned, the host installer only registers the local helper. It does not clone, and it does not open a browser. Double-click it once per machine. After that, the toolbar starts the bridge. If the bridge has stopped, double-click the same file again.
 
 | This computer | Double-click | What it runs |
 |---|---|---|
@@ -43,13 +46,7 @@ On every platform that helper:
 - If this folder is on the Desktop, in Documents, or in Downloads, copies the bridge to a local snapshot so Chrome is allowed to start it.
 - Records the GitHub branch this clone follows, so **Update** can see a newer version even when Chrome cannot read those folders.
 
-On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Install Linux.sh"`) and double-click it again, or run it from a terminal.
-
-Python 3 has to be on the machine already. The Windows file looks for `py -3`, then `python`, then `python3`.
-
-## Setup demo
-
-`Setup Mac.command`, `Setup Windows.bat`, and `Setup Linux.sh` detect this computer. They ask which installed browser to use, clone the `dev` branch into `~/HeadStart` when you did not start them from a checkout, register the planner host, and open that browser’s extensions page. Developer mode → **Load unpacked** still has to be clicked on the folder the script prints. Safari and Firefox are not offered.
+The Windows file looks for `py -3`, then `python`, then `python3`.
 
 ## Uninstall the host
 
