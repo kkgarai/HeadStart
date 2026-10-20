@@ -10993,6 +10993,9 @@ def cli_flag_model(raw: str) -> str:
 def set_plan_force_model(model_id: str) -> None:
     global PLAN_FORCE_MODEL
     PLAN_FORCE_MODEL = (model_id or "").strip()
+    if PLAN_FORCE_MODEL:
+        with PLAN_USAGE_LOCK:
+            PLAN_USAGE["model"] = PLAN_FORCE_MODEL
 
 
 _MODEL_SHAPE: dict[str, str] = {}
@@ -14325,29 +14328,34 @@ def record_cli_result(evt: dict) -> None:
         cost = max(0.0, float(raw_cost or 0))
     except (TypeError, ValueError):
         cost = 0.0
-    model = str(evt.get("model") or "").strip()
     with PLAN_USAGE_LOCK:
         _add_usage_bag(PLAN_USAGE.setdefault("cli", empty_run_usage()), parsed)
         PLAN_USAGE["cliCost"] = float(PLAN_USAGE.get("cliCost") or 0) + cost
         if parsed.get("totalTokens") or cost:
             PLAN_USAGE["hasCli"] = True
-        if model:
-            PLAN_USAGE["model"] = model
 
 
 def _model_rates(model: str) -> tuple[float, float, float, float]:
-    """USD per million tokens: input, output, cache read, cache write."""
-    low = str(model or "").lower()
-    if "opus" in low:
+    """USD per million tokens: input, output, cache read, cache write. Provider list prices."""
+    low = str(model or "").lower().replace("_", "-")
+    if "opus-4.1" in low or "opus-4-1" in low or re.search(r"opus-4(?!\.\d|-)", low):
         return 15.0, 75.0, 1.5, 18.75
-    if "haiku" in low:
+    if "opus" in low:
+        return 5.0, 25.0, 0.50, 6.25
+    if "haiku-3.5" in low or "haiku-3-5" in low:
         return 0.80, 4.0, 0.08, 1.0
-    if "sonnet" in low:
+    if "haiku" in low:
+        return 1.0, 5.0, 0.10, 1.25
+    if "sonnet-5" in low:
+        return 2.0, 10.0, 0.20, 2.50
+    if "sonnet" in low or low in {"sonnet"}:
         return 3.0, 15.0, 0.30, 3.75
-    if low.startswith("gpt-4.1") or "gpt-4.1" in low:
-        return 2.0, 8.0, 0.5, 2.5
+    if "grok-4.5" in low or "grok-4-5" in low:
+        return 2.0, 6.0, 0.30, 2.0
     if "grok" in low:
-        return 3.0, 15.0, 0.75, 3.75
+        return 2.0, 6.0, 0.50, 2.0
+    if "gpt-4.1" in low:
+        return 2.0, 8.0, 0.5, 2.5
     return 3.0, 15.0, 0.30, 3.75
 
 
@@ -14366,9 +14374,8 @@ def plan_usage_for_page(model: str = "") -> dict:
         has_cli = PLAN_USAGE.get("hasCli") is True
         cli = dict(PLAN_USAGE.get("cli") or empty_run_usage())
         proxy = dict(PLAN_USAGE.get("proxy") or empty_run_usage())
-        cli_cost = float(PLAN_USAGE.get("cliCost") or 0)
         stored_model = str(PLAN_USAGE.get("model") or "")
-    chosen = (model or stored_model or "").strip()
+    chosen = (plan_force_model() or model or stored_model or "").strip()
     bag = cli if has_cli else proxy
     out = empty_run_usage()
     for key in ("inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"):
@@ -14380,12 +14387,9 @@ def plan_usage_for_page(model: str = "") -> dict:
             + out["cacheReadTokens"]
             + out["cacheWriteTokens"]
         )
-    if cli_cost > 0:
-        out["costUsd"] = round(cli_cost, 6)
-        out["costSource"] = "claude"
-    elif out["totalTokens"]:
+    if out["totalTokens"]:
         out["costUsd"] = round(estimate_cost_usd(out, chosen), 6)
-        out["costSource"] = "estimate"
+        out["costSource"] = "list"
     else:
         out["costUsd"] = 0.0
         out["costSource"] = ""
