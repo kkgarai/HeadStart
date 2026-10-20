@@ -14358,6 +14358,10 @@ def _model_rates(model: str) -> tuple[float, float, float, float]:
         return 2.0, 6.0, 0.30, 2.0
     if "grok" in low:
         return 2.0, 6.0, 0.50, 2.0
+    if "gpt-6.1-sol" in low or "gpt-6-1-sol" in low:
+        return 2.0, 10.0, 0.10, 2.50
+    if "gpt-6-sol" in low:
+        return 2.0, 10.0, 0.20, 2.50
     if "gpt-4.1" in low:
         return 2.0, 8.0, 0.5, 2.5
     return 3.0, 15.0, 0.30, 3.75
