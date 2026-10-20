@@ -2314,6 +2314,64 @@ def stamp_clock(data: dict) -> None:
     data["daypartLabel"] = {"sod": "Start of Day", "mid": "Mid-Day", "eod": "End of Day"}[part]
 
 
+def empty_run_usage() -> dict:
+    return {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0.0,
+        "costSource": "",
+        "model": "",
+    }
+
+
+def stamp_run_usage(data: dict) -> None:
+    """Keep this run's tokens/$ if present. Missing or EMPTY → zeros. Do not invent spend."""
+    if not isinstance(data, dict):
+        return
+    out = empty_run_usage()
+    if os.environ.get("DAY_PLANNER_EMPTY") == "1":
+        data["runUsage"] = out
+        return
+    raw = data.get("runUsage")
+    if isinstance(raw, dict):
+        def nint(*keys: str) -> int:
+            for key in keys:
+                if raw.get(key) is None:
+                    continue
+                try:
+                    return max(0, int(raw[key]))
+                except (TypeError, ValueError):
+                    continue
+            return 0
+
+        out["inputTokens"] = nint("inputTokens", "input_tokens")
+        out["outputTokens"] = nint("outputTokens", "output_tokens")
+        out["cacheReadTokens"] = nint("cacheReadTokens", "cache_read_input_tokens")
+        out["cacheWriteTokens"] = nint("cacheWriteTokens", "cache_creation_input_tokens")
+        out["totalTokens"] = nint("totalTokens")
+        if not out["totalTokens"]:
+            out["totalTokens"] = (
+                out["inputTokens"]
+                + out["outputTokens"]
+                + out["cacheReadTokens"]
+                + out["cacheWriteTokens"]
+            )
+        try:
+            out["costUsd"] = max(0.0, float(raw.get("costUsd") if raw.get("costUsd") is not None else raw.get("cost") or 0))
+        except (TypeError, ValueError):
+            out["costUsd"] = 0.0
+        src = str(raw.get("costSource") or "").strip().lower()
+        if src in {"claude", "estimate"}:
+            out["costSource"] = src
+        elif out["costUsd"] > 0:
+            out["costSource"] = "estimate"
+        out["model"] = str(raw.get("model") or "")[:80]
+    data["runUsage"] = out
+
+
 def inject_facts(data: dict) -> None:
     """Shift = login–logout. Assembled schedule = today's Assembled blocks only."""
     facts = [str(f).strip() for f in (data.get("facts") or []) if str(f).strip()]
@@ -5791,6 +5849,7 @@ def sanitize(data: dict) -> dict:
     canonicalize_titles(data)
     fix_laptop_ist_clock(data)
     stamp_clock(data)
+    stamp_run_usage(data)
     inject_facts(data)
     fill_identity(data)
     fill_slack_urls(data)

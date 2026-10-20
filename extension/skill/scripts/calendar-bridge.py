@@ -567,6 +567,8 @@ PLAN_PROC: subprocess.Popen | None = None
 PLAN_STOP = threading.Event()
 PLAN_ACTIVE = threading.Event()
 PLAN_FORCE_MODEL = ""
+PLAN_USAGE_LOCK = threading.Lock()
+PLAN_USAGE: dict = {}
 PLAN_SYSTEM_OVERRIDE: pathlib.Path | None = None
 BRIDGE_IDLE_SEC = 2 * 60 * 60
 BRIDGE_HEARTBEAT_PATHS = {
@@ -7025,6 +7027,7 @@ def publish_plan_inprocess(path: pathlib.Path) -> str:
             return "template missing __BRIEFING_DATA__"
         sanit = _sanitize_mod()
         sanit.sanitize(data)
+        attach_run_usage(data)
         raw = json.dumps(data, ensure_ascii=False)
         if "</" in raw:
             raw = raw.replace("</", "<\\/")
@@ -7078,6 +7081,7 @@ def salvage_publish_plan(started_epoch: float) -> bool:
             sanit.omit_done_inbox_rows(data)
         except Exception:
             pass
+        attach_run_usage(data)
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except (OSError, json.JSONDecodeError, Exception) as exc:
         append_plan_step(kind="log", label="Publish skipped: " + clip(str(exc), 220))
@@ -7125,6 +7129,7 @@ def salvage_publish_plan(started_epoch: float) -> bool:
                 sanit = _sanitize_mod()
                 sanit.restore_unreviewed_inbox(data, prev, force=True)
                 sanit.omit_done_inbox_rows(data)
+                attach_run_usage(data)
                 path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
@@ -8649,6 +8654,13 @@ def live_page_html() -> bytes:
             _sanitize_mod().fill_gus_item_peeks(data)
         except Exception:
             pass
+        try:
+            _sanitize_mod().stamp_run_usage(data)
+        except Exception:
+            if not isinstance(data.get("runUsage"), dict):
+                data["runUsage"] = empty_run_usage()
+        if PLAN_ACTIVE.is_set():
+            data["runUsage"] = empty_run_usage()
         raw = json.dumps(data, ensure_ascii=False)
         if "</" in raw:
             raw = raw.replace("</", "<\\/")
@@ -8656,7 +8668,10 @@ def live_page_html() -> bytes:
             return template.replace("__BRIEFING_DATA__", raw).encode("utf-8")
     except Exception:
         pass
-    return PAGE.read_bytes()
+    try:
+        return PAGE.read_bytes()
+    except OSError:
+        return unpublished_page_html()
 
 
 def load_live_briefing() -> dict:
@@ -10978,6 +10993,9 @@ def cli_flag_model(raw: str) -> str:
 def set_plan_force_model(model_id: str) -> None:
     global PLAN_FORCE_MODEL
     PLAN_FORCE_MODEL = (model_id or "").strip()
+    if PLAN_FORCE_MODEL:
+        with PLAN_USAGE_LOCK:
+            PLAN_USAGE["model"] = PLAN_FORCE_MODEL
 
 
 _MODEL_SHAPE: dict[str, str] = {}
@@ -13392,6 +13410,7 @@ def handle_stream_line(line: str, flags: dict) -> None:
             )
         return
     if et == "result":
+        record_cli_result(evt)
         err = bool(evt.get("is_error"))
         dur = evt.get("duration_ms")
         label = "Failed" if err else "Finished"
@@ -13730,6 +13749,7 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
         )
         return
     sweep_run_scratch()
+    reset_plan_usage()
     run_started = time.time()
     try:
         runner = resolve_plan_runner(runner_id)
@@ -14168,10 +14188,238 @@ def run_plan_job_inner(token: str, model: str = "", runner_id: str = "") -> None
     return
 
 
+def empty_run_usage() -> dict:
+    return {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "totalTokens": 0,
+        "costUsd": 0.0,
+        "costSource": "",
+        "model": "",
+    }
+
+
+def reset_plan_usage() -> None:
+    """Each Run Planner starts at zero. The header updates only from this run."""
+    with PLAN_USAGE_LOCK:
+        PLAN_USAGE.clear()
+        PLAN_USAGE["cli"] = empty_run_usage()
+        PLAN_USAGE["proxy"] = empty_run_usage()
+        PLAN_USAGE["cliCost"] = 0.0
+        PLAN_USAGE["hasCli"] = False
+        PLAN_USAGE["model"] = ""
+
+
+def _usage_int(raw: object, *keys: str) -> int:
+    for key in keys:
+        if not isinstance(raw, dict) or raw.get(key) is None:
+            continue
+        try:
+            return max(0, int(raw[key]))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def parse_usage_blob(raw: object) -> dict:
+    row = raw if isinstance(raw, dict) else {}
+    inp = _usage_int(row, "input_tokens", "prompt_tokens", "inputTokens")
+    out = _usage_int(row, "output_tokens", "completion_tokens", "outputTokens")
+    cread = _usage_int(row, "cache_read_input_tokens", "cache_read_tokens", "cacheReadTokens")
+    cwrite = _usage_int(
+        row, "cache_creation_input_tokens", "cache_creation_tokens", "cacheWriteTokens"
+    )
+    return {
+        "inputTokens": inp,
+        "outputTokens": out,
+        "cacheReadTokens": cread,
+        "cacheWriteTokens": cwrite,
+        "totalTokens": inp + out + cread + cwrite,
+    }
+
+
+def _add_usage_bag(bag: dict, extra: dict) -> None:
+    for key in ("inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"):
+        bag[key] = int(bag.get(key) or 0) + int(extra.get(key) or 0)
+
+
+def _json_object_at(blob: str, brace_at: int) -> dict | None:
+    if brace_at < 0 or brace_at >= len(blob) or blob[brace_at] != "{":
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(brace_at, min(len(blob), brace_at + 12000)):
+        ch = blob[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(blob[brace_at : i + 1])
+                except json.JSONDecodeError:
+                    return None
+                return obj if isinstance(obj, dict) else None
+    return None
+
+
+def harvest_proxy_usage(buf: bytes) -> None:
+    """Last usage on a gateway response. message_start has input; later events have output."""
+    if not PLAN_ACTIVE.is_set() or not buf:
+        return
+    text = buf.decode("utf-8", "replace")
+    first = None
+    last = None
+    idx = 0
+    while True:
+        found = text.find('"usage"', idx)
+        if found < 0:
+            break
+        brace = text.find("{", found)
+        parsed = parse_usage_blob(_json_object_at(text, brace) if brace >= 0 else None)
+        if parsed.get("totalTokens"):
+            if first is None:
+                first = parsed
+            last = parsed
+        idx = found + 7
+    if not last and not first:
+        return
+    src = last or {}
+    seed = first or {}
+    merged = {
+        "inputTokens": int(src.get("inputTokens") or 0) or int(seed.get("inputTokens") or 0),
+        "outputTokens": int(src.get("outputTokens") or 0) or int(seed.get("outputTokens") or 0),
+        "cacheReadTokens": int(src.get("cacheReadTokens") or 0) or int(seed.get("cacheReadTokens") or 0),
+        "cacheWriteTokens": int(src.get("cacheWriteTokens") or 0) or int(seed.get("cacheWriteTokens") or 0),
+    }
+    merged["totalTokens"] = (
+        merged["inputTokens"]
+        + merged["outputTokens"]
+        + merged["cacheReadTokens"]
+        + merged["cacheWriteTokens"]
+    )
+    with PLAN_USAGE_LOCK:
+        _add_usage_bag(PLAN_USAGE.setdefault("proxy", empty_run_usage()), merged)
+
+
+def record_cli_result(evt: dict) -> None:
+    if not isinstance(evt, dict):
+        return
+    parsed = parse_usage_blob(evt.get("usage") if isinstance(evt.get("usage"), dict) else {})
+    cost = 0.0
+    raw_cost = evt.get("total_cost_usd")
+    if raw_cost is None:
+        raw_cost = evt.get("total_cost")
+    try:
+        cost = max(0.0, float(raw_cost or 0))
+    except (TypeError, ValueError):
+        cost = 0.0
+    with PLAN_USAGE_LOCK:
+        _add_usage_bag(PLAN_USAGE.setdefault("cli", empty_run_usage()), parsed)
+        PLAN_USAGE["cliCost"] = float(PLAN_USAGE.get("cliCost") or 0) + cost
+        if parsed.get("totalTokens") or cost:
+            PLAN_USAGE["hasCli"] = True
+
+
+def _model_rates(model: str) -> tuple[float, float, float, float]:
+    """USD per million tokens: input, output, cache read, cache write. Provider list prices."""
+    low = str(model or "").lower().replace("_", "-")
+    if "opus-5.5" in low or "opus-5-5" in low:
+        return 4.0, 20.0, 0.20, 5.0
+    if "opus-4.1" in low or "opus-4-1" in low or re.search(r"opus-4(?!\.\d|-)", low):
+        return 15.0, 75.0, 1.5, 18.75
+    if "opus" in low:
+        return 5.0, 25.0, 0.50, 6.25
+    if "haiku-3.5" in low or "haiku-3-5" in low:
+        return 0.80, 4.0, 0.08, 1.0
+    if "haiku" in low:
+        return 1.0, 5.0, 0.10, 1.25
+    if "sonnet-5.5" in low or "sonnet-5-5" in low:
+        return 2.0, 10.0, 0.10, 2.50
+    if "sonnet-5" in low:
+        return 2.0, 10.0, 0.20, 2.50
+    if "sonnet" in low or low in {"sonnet"}:
+        return 3.0, 15.0, 0.30, 3.75
+    if "grok-4.5" in low or "grok-4-5" in low:
+        return 2.0, 6.0, 0.30, 2.0
+    if "grok" in low:
+        return 2.0, 6.0, 0.50, 2.0
+    if "gpt-6.1-sol" in low or "gpt-6-1-sol" in low:
+        return 2.0, 10.0, 0.10, 2.50
+    if "gpt-6-sol" in low:
+        return 2.0, 10.0, 0.20, 2.50
+    if "gpt-4.1" in low:
+        return 2.0, 8.0, 0.5, 2.5
+    return 3.0, 15.0, 0.30, 3.75
+
+
+def estimate_cost_usd(usage: dict, model: str) -> float:
+    inp, out, cread, cwrite = _model_rates(model)
+    return (
+        int(usage.get("inputTokens") or 0) * inp
+        + int(usage.get("outputTokens") or 0) * out
+        + int(usage.get("cacheReadTokens") or 0) * cread
+        + int(usage.get("cacheWriteTokens") or 0) * cwrite
+    ) / 1_000_000.0
+
+
+def plan_usage_for_page(model: str = "") -> dict:
+    with PLAN_USAGE_LOCK:
+        has_cli = PLAN_USAGE.get("hasCli") is True
+        cli = dict(PLAN_USAGE.get("cli") or empty_run_usage())
+        proxy = dict(PLAN_USAGE.get("proxy") or empty_run_usage())
+        stored_model = str(PLAN_USAGE.get("model") or "")
+    chosen = (plan_force_model() or model or stored_model or "").strip()
+    bag = cli if has_cli else proxy
+    out = empty_run_usage()
+    for key in ("inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "totalTokens"):
+        out[key] = max(0, int(bag.get(key) or 0))
+    if not out["totalTokens"]:
+        out["totalTokens"] = (
+            out["inputTokens"]
+            + out["outputTokens"]
+            + out["cacheReadTokens"]
+            + out["cacheWriteTokens"]
+        )
+    if out["totalTokens"]:
+        out["costUsd"] = round(estimate_cost_usd(out, chosen), 6)
+        out["costSource"] = "list"
+    else:
+        out["costUsd"] = 0.0
+        out["costSource"] = ""
+    out["model"] = chosen[:80]
+    return out
+
+
+def attach_run_usage(data: dict, model: str = "") -> None:
+    if not isinstance(data, dict):
+        return
+    mid = (
+        model
+        or str(data.get("gatewayModel") or data.get("model") or plan_force_model() or "")
+    ).strip()
+    data["runUsage"] = plan_usage_for_page(mid)
+
+
 def start_plan_run(token: str, model: str = "", runner_id: str = "") -> dict:
     if plan_job_busy():
         return read_plan_state()
     PLAN_STOP.clear()
+    reset_plan_usage()
     PLAN_ACTIVE.set()
     with PLAN_LOCK:
         _write_plan_state_unlocked(
@@ -14291,19 +14539,26 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             self.send_header(key, val)
         self.end_headers()
+        collected = b""
         try:
             if body_iter is None:
                 if err_body:
                     self.wfile.write(err_body)
-                return
-            while True:
-                chunk = body_iter.read(8192)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
+                    collected = err_body
+            else:
+                while True:
+                    chunk = body_iter.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                    if PLAN_ACTIVE.is_set():
+                        collected += chunk
+                        if len(collected) > 256_000:
+                            collected = collected[-96_000:]
         except BrokenPipeError:
-            return
+            pass
+        harvest_proxy_usage(collected)
 
     def do_OPTIONS(self):
         self.send_response(204)

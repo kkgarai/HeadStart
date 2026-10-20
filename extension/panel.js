@@ -82,10 +82,61 @@ let planLogMode = "compact";
 let planStartedAt = "";
 let pageStampAtRun = "";
 let askHistory = [];
+let plannerRunLive = false;
+
+function usageNum(v) {
+  const n = Number(v);
+  return isFinite(n) && n > 0 ? Math.round(n) : 0;
+}
+
+function formatRunTokens(n) {
+  const x = usageNum(n);
+  try {
+    return x.toLocaleString("en-US") + (x === 1 ? " token" : " tokens");
+  } catch (e) {
+    return String(x) + (x === 1 ? " token" : " tokens");
+  }
+}
+
+function formatRunCost(n) {
+  let x = Number(n);
+  if (!isFinite(x) || x < 0) x = 0;
+  if (x > 0 && x < 0.01) return "$" + x.toFixed(4);
+  return "$" + x.toFixed(2);
+}
+
+function paintRunUsage(raw) {
+  const el = document.getElementById("run-usage");
+  if (!el) return;
+  const u = plannerRunLive ? {} : raw || {};
+  let tokens = usageNum(u.totalTokens);
+  if (!tokens) {
+    tokens = usageNum(u.inputTokens) + usageNum(u.outputTokens)
+      + usageNum(u.cacheReadTokens) + usageNum(u.cacheWriteTokens);
+  }
+  el.textContent = "This run · " + formatRunTokens(tokens) + " · " + formatRunCost(u.costUsd);
+}
+
+async function refreshRunUsageFromPage() {
+  if (plannerRunLive) {
+    paintRunUsage({});
+    return;
+  }
+  try {
+    const data = await readPublishedPage();
+    paintRunUsage((data && data.runUsage) || {});
+  } catch (_) {
+    paintRunUsage({});
+  }
+}
 
 function setRunUi(running) {
   runBtn.disabled = !!running;
   if (stopBtn) stopBtn.hidden = !running;
+  if (running) {
+    plannerRunLive = true;
+    paintRunUsage({});
+  }
 }
 
 function setStatus(text) {
@@ -145,6 +196,7 @@ function showPage() {
   askFab.hidden = false;
   setStatus("Bridge " + bridgeUrl.replace("http://", ""));
   chrome.runtime.sendMessage({ type: "sync" });
+  refreshRunUsageFromPage();
 }
 
 function refreshOpenPage() {
@@ -869,6 +921,8 @@ async function runPlanner() {
   } catch (_) {
     pageStampAtRun = "";
   }
+  plannerRunLive = true;
+  paintRunUsage({});
   setRunUi(true);
   resetSteps();
   setStatus("Starting planner run…");
@@ -1022,14 +1076,18 @@ async function pollStatus() {
         return;
       }
       pollTimer = 0;
+      plannerRunLive = false;
       setRunUi(false);
       if (state === "ok") {
         setStatus("Published. Refreshing calendar…");
         await refreshCalendarThenShow();
+        await refreshRunUsageFromPage();
       } else if (state === "error") {
         setStatus(body.error || "Planner run failed");
+        await refreshRunUsageFromPage();
       } else {
         setStatus("Idle");
+        await refreshRunUsageFromPage();
       }
     } catch (_) {
       misses += 1;
@@ -1326,6 +1384,7 @@ if (updateBtn) {
 }
 
 (async function boot() {
+  paintRunUsage({});
   const verEl = document.getElementById("ext-version");
   if (verEl) {
     try {
