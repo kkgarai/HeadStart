@@ -75,9 +75,7 @@ html, body {
 }
 .status {
   color: var(--muted);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   white-space: nowrap;
 }
 .spacer { flex: 1; }
