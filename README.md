@@ -47,6 +47,10 @@ On a Mac, the first double-click can be blocked until you right-click the file a
 
 Python 3 has to be on the machine already. The Windows file looks for `py -3`, then `python`, then `python3`.
 
+## Setup demo
+
+`Setup Mac.command`, `Setup Windows.bat`, and `Setup Linux.sh` detect this computer. They ask which installed browser to use, clone the `dev` branch into `~/HeadStart` when you did not start them from a checkout, register the planner host, and open that browser’s extensions page. Developer mode → **Load unpacked** still has to be clicked on the folder the script prints. Safari and Firefox are not offered.
+
 ## Uninstall the host
 
 Double-click the uninstaller in that same folder. Then open `chrome://extensions` and remove HeadStart. The uninstaller does not delete the cloned folder, and it does not remove the extension from Chrome.
