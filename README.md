@@ -4,49 +4,27 @@ Chrome extension for an engineer’s shift. Version **0.2.6.0 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
-Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.claude/skills`.
+Download the installer for this computer. Do not clone the repository yourself. The installer downloads the rest.
 
 ## Install
 
-The setup file is in the repository root, next to `manifest.json`, on the `dev` branch.
+Save the installer, then double-click it.
 
-| This computer | Double-click |
+| This computer | Download |
 |---|---|
-| Mac | `Setup Mac.command` |
-| Windows | `Setup Windows.bat` |
-| Linux | `Setup Linux.sh` |
+| Mac | [Setup Mac.command](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Mac.command) |
+| Windows | [Setup Windows.bat](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Windows.bat) |
+| Linux | [Setup Linux.sh](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Linux.sh) |
 
-Git and Python 3 have to be on the machine already. The setup file does not install them. On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
+On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
 
-It detects Mac, Windows, or Linux. It does not ask you to pick the computer. It lists the Chromium browsers that can actually open — Chrome, Chrome Beta, Chrome Dev, Chrome Canary, Edge, Brave, Vivaldi, Chromium — and asks which one to use. Safari and Firefox are not offered.
-
-If you did not start it from a checkout, it clones the `dev` branch into `~/HeadStart` (`%USERPROFILE%\HeadStart` on Windows). It then registers the planner host and opens that browser’s extensions page. The folder to load is printed in the terminal. That folder is the one with `manifest.json`, not the `extension` folder inside it.
+The installer detects this computer. It asks which installed browser to use, downloads HeadStart into `~/HeadStart` (`%USERPROFILE%\HeadStart` on Windows), registers the planner host, and opens that browser’s extensions page. It prints the folder to load. That folder contains `manifest.json`.
 
 1. In the browser it opened: turn on **Developer mode** → **Load unpacked** → choose the folder it printed.
 
 2. Click the HeadStart toolbar icon. The page asks for the Express token, the model, and the runner.
 
-The browser cannot be given the extension by the script. **Load unpacked** stays that one click.
-
-### Host only
-
-When the folder is already cloned, the host installer only registers the local helper. It does not clone, and it does not open a browser. Double-click it once per machine. After that, the toolbar starts the bridge. If the bridge has stopped, double-click the same file again.
-
-| This computer | Double-click | What it runs |
-|---|---|---|
-| Mac | `Install Mac.command` | `python3 extension/skill/scripts/install-native-host.py` |
-| Windows | `Install Windows.bat` | `py -3`, or `python`, or `python3`, on `extension\skill\scripts\install-native-host.py` |
-| Linux | `Install Linux.sh` | `python3 extension/skill/scripts/install-native-host.py` |
-
-On every platform that helper:
-
-- Registers the native host for Chrome, Chrome Beta, Chrome Dev, Chrome Canary, Chromium, Edge, Brave, and Vivaldi where that browser is installed.
-- On Windows, also writes the native-host registry keys Chrome uses.
-- On a Mac, writes a login helper that does not keep the bridge running after you quit Chrome.
-- If this folder is on the Desktop, in Documents, or in Downloads, copies the bridge to a local snapshot so Chrome is allowed to start it.
-- Records the GitHub branch this clone follows, so **Update** can see a newer version even when Chrome cannot read those folders.
-
-The Windows file looks for `py -3`, then `python`, then `python3`.
+If the bridge has stopped, double-click the same installer again.
 
 ## Uninstall the host
 
