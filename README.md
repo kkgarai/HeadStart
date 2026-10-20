@@ -1,6 +1,6 @@
 # HeadStart
 
-Chrome extension for an engineer’s shift. Version **0.2.6.5 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.6.6 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
@@ -10,11 +10,11 @@ Download the installer for this computer. Do not clone the repository yourself. 
 
 Save the installer, then double-click it.
 
-| This computer | Download |
-|---|---|
-| Mac | [Setup Mac.command](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Mac.command) |
-| Windows | [Setup Windows.bat](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Windows.bat) |
-| Linux | [Setup Linux.sh](https://raw.githubusercontent.com/kkgarai/HeadStart/dev/Setup%20Linux.sh) |
+| This computer | Installer | |
+|---|---|---|
+| Mac | `Setup Mac.command` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup%20Mac.command) |
+| Windows | `Setup Windows.bat` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup%20Windows.bat) |
+| Linux | `Setup Linux.sh` | [![Download](https://img.shields.io/badge/Download-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.6/Setup%20Linux.sh) |
 
 On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
 
