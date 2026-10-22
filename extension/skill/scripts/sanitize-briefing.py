@@ -4235,29 +4235,44 @@ def _gather_case_numbers() -> set[str]:
     return nums
 
 
-def live_owned_case_numbers(owned=None) -> set[str] | None:
-    """None = ownership unknown (do not strip). set, including empty, is this run's bin."""
-    if owned is not None:
-        nums = _owned_digit_set(owned)
-        nums |= _gather_case_numbers()
-        return nums
+def _snapshot_owned_numbers() -> set[str] | None:
+    """This run's open Case query. None when that query did not finish."""
     try:
         obj = json.loads(pathlib.Path("/tmp/owned-cases.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        obj = None
-    if isinstance(obj, dict) and obj.get("fetched") is True:
-        nums: set[str] = set()
-        for rec in obj.get("records") or []:
-            if not isinstance(rec, dict):
-                continue
-            n = str(rec.get("CaseNumber") or "").strip()
-            if n:
-                nums.add(n)
-                match = CASE_NUM_RE.search(n)
-                if match:
-                    nums.add(match.group(1))
-        nums |= _gather_case_numbers()
+        return None
+    if not isinstance(obj, dict) or obj.get("fetched") is not True:
+        return None
+    nums: set[str] = set()
+    for rec in obj.get("records") or []:
+        if not isinstance(rec, dict):
+            continue
+        n = str(rec.get("CaseNumber") or "").strip()
+        if not n:
+            continue
+        nums.add(n)
+        match = CASE_NUM_RE.search(n)
+        if match:
+            nums.add(match.group(1))
+    return nums
+
+
+def live_owned_case_numbers(owned=None) -> set[str] | None:
+    """None = ownership unknown (do not strip). set, including empty, is this run's open bin.
+
+    A finished open-case query is the bin. The previous page's gather must not put a
+    closed or transferred case back.
+    """
+    snapshot = _snapshot_owned_numbers()
+    if owned is not None:
+        nums = _owned_digit_set(owned)
+        if snapshot is not None:
+            nums |= snapshot
+        else:
+            nums |= _gather_case_numbers()
         return nums
+    if snapshot is not None:
+        return snapshot
     gather_nums = _gather_case_numbers()
     if gather_nums and _load_planner_gather().get("orgcsFetchOk") is True:
         return gather_nums
@@ -4301,6 +4316,7 @@ def drop_unowned_cases(data: dict, owned=None) -> None:
         "quickWins",
         "customerAskedMeeting",
         "beforeYouLogOff",
+        "tomorrowFirst",
     ):
         bag = data.get(key)
         if not isinstance(bag, list):
