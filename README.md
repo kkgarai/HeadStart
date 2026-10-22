@@ -1,51 +1,32 @@
 # HeadStart
 
-Chrome extension for an engineer’s shift. Version **0.2.6.0 beta**.
+Chrome extension for an engineer’s shift. Version **0.2.6.17 beta**.
 
 Python 3 is required. It is the same Python the planner uses later to run the model. This package does not install Python, Claude Code, or the OrgCS, Slack, Gmail, or Calendar logins.
 
-Load this folder in Chrome. Do not copy `skill/` into `~/.cursor/skills` or `~/.claude/skills`.
+Download the zip. Do not clone the repository yourself, and do not download an installer on its own. Unzip it, then run the installer for this computer. That installer downloads the rest.
 
 ## Install
 
-Clone the public repository, then load that folder in Chrome. The folder contains `manifest.json`, the three installers, and an `extension` folder with the rest of the files.
+[![Download](https://img.shields.io/badge/Download-HeadStart--Setup.zip-2ea44f?style=for-the-badge)](https://github.com/kkgarai/HeadStart/releases/download/v0.2.6.8/HeadStart-Setup.zip)
 
-```bash
-git clone https://github.com/kkgarai/HeadStart.git
-cd HeadStart
-```
+The zip contains three installers. Use the one for this computer.
 
-1. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → choose the `HeadStart` folder you just cloned. That is the folder with `manifest.json`, not the `extension` folder inside it.
+| This computer | Double-click |
+|---|---|
+| Mac | `Setup Mac.command` |
+| Windows | `Setup Windows.bat` |
+| Linux | `Setup Linux.sh` |
 
-2. Click the toolbar icon. The first time, the page says the bridge is not running. Go back to that same folder and double-click the installer for your computer. The page lists all three and marks the one for this computer.
+On a Mac, double-click the zip, then double-click `Setup Mac.command`. The first open can be blocked until you right-click that file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Setup Linux.sh"`) and double-click it again.
 
-Do the double-click once per machine. After that, the toolbar starts the bridge. Quitting Chrome does not ask for the installer again.
+The installer detects this computer. It asks which installed browser to use, downloads HeadStart into `~/HeadStart` (`%USERPROFILE%\HeadStart` on Windows), registers the planner host, and opens that browser’s extensions page. It prints the folder to load. That folder contains `manifest.json`.
 
-If the bridge has stopped, the page sends you back to that folder to double-click the same installer.
+1. In the browser it opened: turn on **Developer mode** → **Load unpacked** → choose the folder it printed.
 
-3. Return to Chrome and click the toolbar icon again. The page asks for the Express token, the model, and the runner.
+2. Click the HeadStart toolbar icon. The page asks for the Express token, the model, and the runner.
 
-### What the installer does
-
-The installer registers a small local helper so the toolbar can start the planner bridge. It does not install Python, Claude Code, or any login.
-
-| This computer | Double-click | What it runs |
-|---|---|---|
-| Mac | `Install Mac.command` | `python3 extension/skill/scripts/install-native-host.py` |
-| Windows | `Install Windows.bat` | `py -3`, or `python`, or `python3`, on `extension\skill\scripts\install-native-host.py` |
-| Linux | `Install Linux.sh` | `python3 extension/skill/scripts/install-native-host.py` |
-
-On every platform that helper:
-
-- Registers the native host for Chrome, Chrome Beta, Chrome Dev, Chrome Canary, Chromium, Edge, Brave, and Vivaldi where that browser is installed.
-- On Windows, also writes the native-host registry keys Chrome uses.
-- On a Mac, writes a login helper that does not keep the bridge running after you quit Chrome.
-- If this folder is on the Desktop, in Documents, or in Downloads, copies the bridge to a local snapshot so Chrome is allowed to start it.
-- Records the GitHub branch this clone follows, so **Update** can see a newer version even when Chrome cannot read those folders.
-
-On a Mac, the first double-click can be blocked until you right-click the file and choose **Open**. On Windows, SmartScreen can ask you to allow it once. On Linux, if the file will not run, mark it executable (`chmod +x "Install Linux.sh"`) and double-click it again, or run it from a terminal.
-
-Python 3 has to be on the machine already. The Windows file looks for `py -3`, then `python`, then `python3`.
+If the bridge has stopped, double-click the same installer again.
 
 ## Uninstall the host
 
@@ -76,6 +57,7 @@ If this folder is on the Desktop, in Documents, or in Downloads, double-click th
 
 ## What you still set up yourself
 
+- Git
 - Python 3
 - Claude Code, or another runner the panel lists
 - Express LLM Gateway token

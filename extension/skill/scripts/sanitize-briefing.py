@@ -279,6 +279,12 @@ def _slack_channel_key(item: dict) -> str:
             m = re.search(r"([CGD][A-Z0-9]{8,})", ident)
             cid = m.group(1) if m else ""
     if re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
+        ts = str(item.get("ts") or "").strip()
+        if cid.upper().startswith("D") and ts:
+            return cid.upper() + ":" + ts
+        thread = str(item.get("threadTs") or ts).strip()
+        if thread:
+            return cid.upper() + ":" + thread
         return cid.upper()
     label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip().lower()
     label = re.sub(r"\s*\(dm\)\s*$", "", label, flags=re.I).strip()
@@ -425,8 +431,50 @@ def stamp_inbox_empty(sec: dict, data: dict | None, is_slack: bool) -> None:
     sec["empty"] = sec.get("empty") or ("Slack — clear" if is_slack else "Mail — clear")
 
 
+def _flatten_slack_section(sec: dict, data: dict) -> None:
+    """One Slack list. Do not split Not opened and Needs a reply."""
+    kept: list[dict] = []
+    seen: dict[str, dict] = {}
+
+    def take(it: dict) -> None:
+        ident = _slack_channel_key(it)
+        it["slackBucket"] = "keep"
+        if ident and ident in seen:
+            prev = seen[ident]
+            if _slack_row_time(it) <= _slack_row_time(prev):
+                return
+            if prev in kept:
+                kept.remove(prev)
+            kept.append(it)
+            seen[ident] = it
+            return
+        if ident:
+            seen[ident] = it
+        kept.append(it)
+
+    for grp in sec.get("groups") or []:
+        if not isinstance(grp, dict):
+            continue
+        rows = grp.get("items")
+        if not isinstance(rows, list) or not rows:
+            rows = grp.get("rows") if isinstance(grp.get("rows"), list) else []
+        for it in rows:
+            if isinstance(it, dict):
+                take(it)
+    for it in sec.get("items") or []:
+        if isinstance(it, dict):
+            take(it)
+    sec["asTask"] = True
+    sec["groups"] = []
+    sec["items"] = kept
+    if kept:
+        sec.pop("empty", None)
+    else:
+        stamp_inbox_empty(sec, data, True)
+
+
 def normalize_inbox_buckets(data: dict) -> None:
-    """Keep the model's Slack/Mail groups. Stamp bucket from the group title only."""
+    """Keep the model's Mail groups. Slack is one list."""
     if not isinstance(data, dict):
         return
     for sec in data.get("sections") or []:
@@ -436,6 +484,9 @@ def normalize_inbox_buckets(data: dict) -> None:
         is_slack = bool(re.match(r"slack\b", title, re.I))
         is_mail = bool(re.match(r"(mail|email|gmail)\b", title, re.I))
         if not is_slack and not is_mail:
+            continue
+        if is_slack:
+            _flatten_slack_section(sec, data)
             continue
         unread: list[dict] = []
         opened: list[dict] = []
@@ -2037,7 +2088,13 @@ def normalize_chronology(data: dict) -> None:
                 })
             elif isinstance(ev, dict):
                 beat = dict(ev)
-                beat["text"] = _overview_beat(beat.get("text") or beat.get("body") or "")
+                raw_text = str(beat.get("text") or beat.get("body") or "")
+                kind = str(it.get("kind") or "").lower()
+                ident = str(it.get("id") or "")
+                if kind == "slack" or ident.startswith("slack-") or str(beat.get("kind") or "").lower() == "slack":
+                    beat["text"] = re.sub(r"\s+", " ", raw_text).strip()
+                else:
+                    beat["text"] = _overview_beat(raw_text)
                 if beat.get("text"):
                     out.append(beat)
         out.sort(key=lambda ev: _parse_update_ms(str(ev.get("_ts") or "")) or 0)
@@ -2521,9 +2578,16 @@ def refuse_false_inbox_clear(data: dict) -> None:
     if data.get("inboxReviewed") is True:
         return
     gather = _load_planner_gather()
+    inbox_slack = []
+    try:
+        inbox_blob = json.loads(pathlib.Path("/tmp/planner-inbox.json").read_text(encoding="utf-8"))
+        if isinstance(inbox_blob, dict) and isinstance(inbox_blob.get("slack"), list):
+            inbox_slack = inbox_blob.get("slack") or []
+    except (OSError, json.JSONDecodeError):
+        inbox_slack = []
     slack_cand = []
-    for src in (data.get("slackCandidates"), gather.get("slackCandidates")):
-        if isinstance(src, list):
+    for src in (inbox_slack, data.get("slackCandidates"), gather.get("slackCandidates")):
+        if isinstance(src, list) and src:
             slack_cand = src
             break
     leftovers = [row for row in slack_cand if _is_human_slack_leftover(row)]
@@ -2540,27 +2604,29 @@ def refuse_false_inbox_clear(data: dict) -> None:
     if sec is None:
         sec = {"title": "Slack", "open": True, "groups": [], "items": [], "asTask": True}
         data.setdefault("sections", []).insert(1, sec)
-    if _inbox_rows(sec):
-        return
-    unread, reply = [], []
+    already = set()
+    for _grp, it in _walk_items({"sections": [sec]}):
+        if isinstance(it, dict):
+            already.add(_slack_channel_key(it))
+            ident = str(it.get("id") or "").strip()
+            if ident:
+                already.add(ident)
+    added = []
     for row in leftovers:
         item = dict(row)
+        key = _slack_channel_key(item)
+        ident = str(item.get("id") or "").strip()
+        if (key and key in already) or (ident and ident in already):
+            continue
         item["kind"] = "slack"
-        if item.get("unread") is True:
-            item["slackBucket"] = "unread"
-            unread.append(item)
-        else:
-            item["slackBucket"] = "reply"
-            reply.append(item)
-    groups = []
-    if unread:
-        groups.append({"title": "Not opened", "items": unread})
-    if reply:
-        groups.append({"title": "Needs a reply", "items": reply})
-    if not groups:
+        item["slackBucket"] = "keep"
+        item.pop("openedClip", None)
+        added.append(item)
+    if not added:
         return
-    sec["groups"] = groups
-    sec["items"] = []
+    items = sec.get("items") if isinstance(sec.get("items"), list) else []
+    items.extend(added)
+    sec["items"] = items
     sec.pop("empty", None)
 
 
@@ -4195,29 +4261,44 @@ def _gather_case_numbers() -> set[str]:
     return nums
 
 
-def live_owned_case_numbers(owned=None) -> set[str] | None:
-    """None = ownership unknown (do not strip). set, including empty, is this run's bin."""
-    if owned is not None:
-        nums = _owned_digit_set(owned)
-        nums |= _gather_case_numbers()
-        return nums
+def _snapshot_owned_numbers() -> set[str] | None:
+    """This run's open Case query. None when that query did not finish."""
     try:
         obj = json.loads(pathlib.Path("/tmp/owned-cases.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, TypeError):
-        obj = None
-    if isinstance(obj, dict) and obj.get("fetched") is True:
-        nums: set[str] = set()
-        for rec in obj.get("records") or []:
-            if not isinstance(rec, dict):
-                continue
-            n = str(rec.get("CaseNumber") or "").strip()
-            if n:
-                nums.add(n)
-                match = CASE_NUM_RE.search(n)
-                if match:
-                    nums.add(match.group(1))
-        nums |= _gather_case_numbers()
+        return None
+    if not isinstance(obj, dict) or obj.get("fetched") is not True:
+        return None
+    nums: set[str] = set()
+    for rec in obj.get("records") or []:
+        if not isinstance(rec, dict):
+            continue
+        n = str(rec.get("CaseNumber") or "").strip()
+        if not n:
+            continue
+        nums.add(n)
+        match = CASE_NUM_RE.search(n)
+        if match:
+            nums.add(match.group(1))
+    return nums
+
+
+def live_owned_case_numbers(owned=None) -> set[str] | None:
+    """None = ownership unknown (do not strip). set, including empty, is this run's open bin.
+
+    A finished open-case query is the bin. The previous page's gather must not put a
+    closed or transferred case back.
+    """
+    snapshot = _snapshot_owned_numbers()
+    if owned is not None:
+        nums = _owned_digit_set(owned)
+        if snapshot is not None:
+            nums |= snapshot
+        else:
+            nums |= _gather_case_numbers()
         return nums
+    if snapshot is not None:
+        return snapshot
     gather_nums = _gather_case_numbers()
     if gather_nums and _load_planner_gather().get("orgcsFetchOk") is True:
         return gather_nums
@@ -4261,6 +4342,7 @@ def drop_unowned_cases(data: dict, owned=None) -> None:
         "quickWins",
         "customerAskedMeeting",
         "beforeYouLogOff",
+        "tomorrowFirst",
     ):
         bag = data.get(key)
         if not isinstance(bag, list):
