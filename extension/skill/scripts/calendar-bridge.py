@@ -5826,6 +5826,8 @@ def seed_plan_from_live() -> dict:
     except Exception:
         pass
     persist_identity(data)
+    data.pop("assembledSchedule", None)
+    data.pop("assembledFromCalendar", None)
     apply_live_assembled(data)
     forget_prior_fetches(data)
     data["todayPlan"] = []
@@ -7090,6 +7092,8 @@ def publish_plan_inprocess(path: pathlib.Path) -> str:
         if "__BRIEFING_DATA__" not in template:
             return "template missing __BRIEFING_DATA__"
         sanit = _sanitize_mod()
+        apply_live_assembled(data)
+        sanit.inject_facts(data)
         sanit.sanitize(data)
         attach_run_usage(data)
         raw = json.dumps(data, ensure_ascii=False)
@@ -7663,6 +7667,7 @@ def compose_work_into_data(data: dict) -> dict:
 
 def merge_calendar_into_page(events: list, tzname: str = "") -> None:
     data = load_live_briefing()
+    apply_live_assembled(data)
     sanit = None
     try:
         sanit = _sanitize_mod()
@@ -7704,6 +7709,7 @@ def merge_calendar_into_page(events: list, tzname: str = "") -> None:
     try:
         if sanit is None:
             sanit = _sanitize_mod()
+        sanit.inject_facts(data)
         sanit.organize_plan(data)
         sanit.compose_work_blocks(data)
         sanit.drop_done_from_plan(data)
@@ -9628,13 +9634,15 @@ def parse_assembled_instants(text: str) -> list[dict]:
     """Parse Assembled get_events only. Keep Casework/Chat/Lunch/Break/PTO."""
     events = []
     for match in re.finditer(
-        r'- "(?P<title>.*)" \(Starts: (?P<start>[^,]*), Ends: (?P<end>[^)]*)\)',
+        r'(?m)^- "(?P<title>[^"\n]*)" \(Starts: (?P<start>[^,]*), Ends: (?P<end>[^)]*)\)',
         text or "",
     ):
         title = (match.group("title") or "").strip()
         start = _parse_iso_dt(match.group("start"))
         end = _parse_iso_dt(match.group("end"))
         if not title or not start or not end:
+            continue
+        if len(title) > 40 or "·" in title:
             continue
         events.append({"label": title, "start": start, "end": end})
     events.sort(key=lambda row: row["start"])
@@ -9847,6 +9855,7 @@ def apply_live_assembled(data: dict) -> None:
     data["assembledFromCalendar"] = live
     if live:
         data["assembledSchedule"] = got["assembledSchedule"]
+        append_plan_step(kind="log", label="Assembled schedule · " + clip(str(got.get("assembledSchedule") or ""), 180))
         if data.get("shiftHoursFrom") != "orgcs" and got.get("shiftStart") and got.get("shiftEnd"):
             data["shiftStart"] = got["shiftStart"]
             data["shiftEnd"] = got["shiftEnd"]
