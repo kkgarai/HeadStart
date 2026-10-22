@@ -11161,9 +11161,17 @@ def preferred_planner_default(models: list[dict]) -> str:
 
 
 def _gateway_model_rows(token: str) -> list:
-    """Every page of GET /v1/models. No pinned SKUs."""
+    """Every page of GET /v1/models. No pinned SKUs.
+
+    The Claude harness header makes this gateway return Claude only.
+    Auth alone returns Grok, GPT, and Gemini as well.
+    """
     base = gateway_base().rstrip("/") + "/v1/models"
-    headers = gateway_headers(token)
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": token,
+        "Authorization": "Bearer " + token,
+    }
     rows: list = []
     cursor = ""
     seen: set[str] = set()
