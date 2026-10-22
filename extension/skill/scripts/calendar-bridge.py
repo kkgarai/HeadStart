@@ -1082,7 +1082,7 @@ def mcp_config_files_for(runner: str = "") -> list[pathlib.Path]:
             cur = start.resolve()
         except OSError:
             continue
-        for _ in range(8):
+        for _ in range(5):
             walked.append(cur / ".cursor" / "mcp.json")
             walked.append(cur / ".mcp.json")
             walked.append(cur / "opencode.json")
@@ -4342,7 +4342,7 @@ def _parse_slack_search(
         file_m = re.search(r"Files:\s*(.+)", chunk)
         if file_m:
             raw_text = (raw_text + " " + file_m.group(1)).strip()
-        text_clip = raw_text[:400] if keep_bots else raw_text[:120]
+        text_clip = raw_text[:400]
         if cid.startswith("D"):
             label = "DM"
         else:
@@ -4354,7 +4354,8 @@ def _parse_slack_search(
             if ts:
                 stamp = ts.replace(".", "")
                 url = f"{url}/p{stamp}"
-        ident = f"slack-{cid}" if cid.startswith("D") else f"slack-{cid}-{ts.replace('.', '')}"
+        stamp = ts.replace(".", "") if ts else ""
+        ident = f"slack-{cid}-{stamp}" if stamp else (f"slack-{cid}" if cid else "")
         item = {
             "id": ident,
             "kind": "slack",
@@ -4882,7 +4883,7 @@ def fill_slack_leftovers(data: dict) -> None:
             cid = str(item.get("channelId") or "")
             ts = str(item.get("threadTs") or item.get("ts") or "")
             if cid.startswith("D"):
-                key = cid
+                key = f"{cid}:{ts}" if ts else cid
             elif cid and ts:
                 key = f"{cid}:{ts}"
             else:
@@ -4906,7 +4907,7 @@ def fill_slack_leftovers(data: dict) -> None:
             keep_bots = bool(args.get("_keep_bots"))
             authored_threads = bool(args.get("_authored_threads"))
             gus_bot_query = bool(args.get("_gus_bot"))
-            for _ in range(5):
+            for _ in range(8):
                 payload = {k: v for k, v in args.items() if not str(k).startswith("_")}
                 if cursor:
                     payload["cursor"] = cursor
@@ -5039,13 +5040,19 @@ def _done_inbox_keys() -> set:
 
 def write_planner_inbox_txt(slack: list, mail: list) -> None:
     done_keys = _done_inbox_keys()
-    slack_rows = [
-        row
-        for row in (slack or [])
-        if not _sanitize_mod().is_gus_notice(row)
-        and _inbox_still_open(row, done_keys)
-        and str(row.get("openedClip") or "").strip()
-    ]
+    slack_rows = []
+    seen_dm: set[str] = set()
+    for row in slack or []:
+        if _sanitize_mod().is_gus_notice(row) or not _inbox_still_open(row, done_keys):
+            continue
+        if not str(row.get("openedClip") or "").strip():
+            continue
+        cid = str(row.get("channelId") or "")
+        if cid.startswith("D"):
+            if cid in seen_dm:
+                continue
+            seen_dm.add(cid)
+        slack_rows.append(row)
     mail_rows = [
         row
         for row in (mail or [])
@@ -5104,7 +5111,7 @@ def write_planner_inbox_txt(slack: list, mail: list) -> None:
             parts.insert(0, f"- mail clips: {len(mail_rows)}. Classify every ## mail block.")
         return "\n\n".join(part for part in parts if part).strip()
 
-    blob = pack(0, 0, -1)
+    blob = pack(500, 500, -1)
     try:
         PLANNER_INBOX_TXT.write_text(blob + ("\n" if blob else ""), encoding="utf-8")
     except OSError:
@@ -5121,11 +5128,11 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
         ts = str(item.get("threadTs") or item.get("ts") or "")
         if item.get("sev1Channel") and cid[:1] in "CG":
             jobs.append(
-                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 40})
+                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100})
             )
         elif cid.startswith("D"):
             jobs.append(
-                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 40})
+                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100})
             )
         elif cid[:1] in "CG" and ts:
             jobs.append(
@@ -5143,28 +5150,36 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
     if not jobs:
         return 0
     _reset_react_budget(min(80, len(jobs) * 2))
+    clip_cache: dict[tuple, str] = {}
+    clip_lock = threading.Lock()
 
     def one(job: tuple[dict, str, dict]) -> int:
         item, tool, args = job
-        clip_parts: list[str] = []
-        cursor = ""
-        for _ in range(6):
-            payload = dict(args)
-            if cursor:
-                payload["cursor"] = cursor
-            try:
-                text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=45)
-            except Exception as exc:
-                item["_openError"] = clip(str(exc), 160)
-                break
-            raw = str(text or "").strip()
-            if raw:
-                clip_parts.append(raw)
-            cursor = _slack_next_cursor(text)
-            if not cursor:
-                break
-        joined = "\n".join(clip_parts)
-        clip_txt = _inbox_plain(joined, INBOX_CLIP_N)
+        cache_key = (tool, str(args.get("channel_id") or ""), str(args.get("message_ts") or ""))
+        with clip_lock:
+            joined = clip_cache.get(cache_key)
+        if joined is None:
+            clip_parts: list[str] = []
+            cursor = ""
+            for _ in range(4):
+                payload = dict(args)
+                if cursor:
+                    payload["cursor"] = cursor
+                try:
+                    text = mcp_call_named(SLACK_MCP_NAMES, tool, payload, timeout=45)
+                except Exception as exc:
+                    item["_openError"] = clip(str(exc), 160)
+                    break
+                raw = str(text or "").strip()
+                if raw:
+                    clip_parts.append(raw)
+                cursor = _slack_next_cursor(text)
+                if not cursor:
+                    break
+            joined = "\n".join(clip_parts)
+            with clip_lock:
+                clip_cache.setdefault(cache_key, joined)
+        clip_txt = _inbox_plain(joined, 12000)
         if not clip_txt:
             return 0
         item["openedClip"] = clip_txt
@@ -5176,7 +5191,15 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
         if not item.get("ts") and args.get("message_ts"):
             item["ts"] = str(args.get("message_ts") or "")
         ensure_slack_link(item)
-        _stamp_clip_last_human(item, joined, data)
+        author = str(item.get("from") or "").strip()
+        if author:
+            item["lastHuman"] = author[:80]
+            try:
+                item["lastHumanIsMe"] = bool(_sanitize_mod()._is_self_person(author, data))
+            except Exception:
+                item["lastHumanIsMe"] = False
+        else:
+            _stamp_clip_last_human(item, joined, data)
         try:
             _sanitize_mod().stamp_slack_dm_label(item, data)
         except Exception:
@@ -5901,7 +5924,7 @@ def _slack_peek_messages(text: str) -> list[dict]:
         if not msg or who.lower() == "slackbot":
             continue
         found.append({"who": who, "when": when, "kind": "slack", "text": msg[:500]})
-        if len(found) >= 8:
+        if len(found) >= 40:
             break
     return found
 
@@ -11106,20 +11129,15 @@ def plan_force_model() -> str:
 
 
 def usable_planner_model(model_id: str) -> bool:
-    """Chat models the planner can send on Express /v1/messages. Drop routing aliases and non-chat SKUs."""
+    """Chat models the planner can send. Hide image, audio, and embedding SKUs only."""
     mid = (model_id or "").strip()
     if not mid:
         return False
     low = mid.lower()
     if re.search(
-        r"(bedrock|vertex|embedding|whisper|tts|dall-e|dalle|imagen|moderation|"
-        r"transcri|codec|auto-router|auto-model|-1m\b|codex)",
+        r"(embedding|whisper|tts|dall-e|dalle|imagen|moderation|transcri|codec)",
         low,
     ):
-        return False
-    if low.startswith(("us.", "global.", "anthropic.")):
-        return False
-    if "anthropic.claude" in low:
         return False
     return True
 
@@ -11149,7 +11167,7 @@ def _gateway_model_rows(token: str) -> list:
     rows: list = []
     cursor = ""
     seen: set[str] = set()
-    for _ in range(8):
+    for _ in range(20):
         url = base if not cursor else base + "?after=" + urllib.parse.quote(cursor)
         req = urllib.request.Request(url, method="GET", headers=headers)
         try:
@@ -11217,28 +11235,8 @@ def list_gateway_models(token: str) -> list[dict]:
     if not models:
         add(default_model())
         models = [row for row in models if usable_planner_model(str(row.get("id") or ""))]
-    checked: list[dict] = []
-    auth_error = ""
-    if models:
-        with ThreadPoolExecutor(max_workers=min(6, len(models))) as pool:
-            futs = {
-                pool.submit(discover_model_shape, token, str(row.get("id") or "")): row
-                for row in models
-                if str(row.get("id") or "")
-            }
-            for fut in as_completed(futs):
-                row = futs[fut]
-                try:
-                    shape = fut.result()
-                except RuntimeError as exc:
-                    auth_error = str(exc)
-                    continue
-                if shape != "no":
-                    checked.append(row)
-    if auth_error and not checked:
-        raise RuntimeError(auth_error)
-    checked.sort(key=lambda row: str(row.get("id") or "").lower())
-    return checked
+    models.sort(key=lambda row: str(row.get("id") or "").lower())
+    return models
 
 
 def ask_now_line(data: dict) -> str:

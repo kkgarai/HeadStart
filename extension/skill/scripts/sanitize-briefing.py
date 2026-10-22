@@ -279,6 +279,12 @@ def _slack_channel_key(item: dict) -> str:
             m = re.search(r"([CGD][A-Z0-9]{8,})", ident)
             cid = m.group(1) if m else ""
     if re.match(r"^[CGD][A-Z0-9]{8,}$", cid, re.I):
+        ts = str(item.get("ts") or "").strip()
+        if cid.upper().startswith("D") and ts:
+            return cid.upper() + ":" + ts
+        thread = str(item.get("threadTs") or ts).strip()
+        if thread:
+            return cid.upper() + ":" + thread
         return cid.upper()
     label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip().lower()
     label = re.sub(r"\s*\(dm\)\s*$", "", label, flags=re.I).strip()
@@ -2521,9 +2527,16 @@ def refuse_false_inbox_clear(data: dict) -> None:
     if data.get("inboxReviewed") is True:
         return
     gather = _load_planner_gather()
+    inbox_slack = []
+    try:
+        inbox_blob = json.loads(pathlib.Path("/tmp/planner-inbox.json").read_text(encoding="utf-8"))
+        if isinstance(inbox_blob, dict) and isinstance(inbox_blob.get("slack"), list):
+            inbox_slack = inbox_blob.get("slack") or []
+    except (OSError, json.JSONDecodeError):
+        inbox_slack = []
     slack_cand = []
-    for src in (data.get("slackCandidates"), gather.get("slackCandidates")):
-        if isinstance(src, list):
+    for src in (inbox_slack, data.get("slackCandidates"), gather.get("slackCandidates")):
+        if isinstance(src, list) and src:
             slack_cand = src
             break
     leftovers = [row for row in slack_cand if _is_human_slack_leftover(row)]
@@ -2540,27 +2553,48 @@ def refuse_false_inbox_clear(data: dict) -> None:
     if sec is None:
         sec = {"title": "Slack", "open": True, "groups": [], "items": [], "asTask": True}
         data.setdefault("sections", []).insert(1, sec)
-    if _inbox_rows(sec):
-        return
+    already = set()
+    for _grp, it in _walk_items({"sections": [sec]}):
+        if isinstance(it, dict):
+            already.add(_slack_channel_key(it))
+            ident = str(it.get("id") or "").strip()
+            if ident:
+                already.add(ident)
     unread, reply = [], []
     for row in leftovers:
         item = dict(row)
+        key = _slack_channel_key(item)
+        ident = str(item.get("id") or "").strip()
+        if (key and key in already) or (ident and ident in already):
+            continue
         item["kind"] = "slack"
+        item.pop("openedClip", None)
         if item.get("unread") is True:
             item["slackBucket"] = "unread"
             unread.append(item)
         else:
             item["slackBucket"] = "reply"
             reply.append(item)
-    groups = []
-    if unread:
-        groups.append({"title": "Not opened", "items": unread})
-    if reply:
-        groups.append({"title": "Needs a reply", "items": reply})
-    if not groups:
+    if not unread and not reply:
         return
+    groups = sec.get("groups") if isinstance(sec.get("groups"), list) else []
+
+    def _add(title: str, rows: list) -> None:
+        if not rows:
+            return
+        for grp in groups:
+            if isinstance(grp, dict) and str(grp.get("title") or "") == title:
+                items = grp.get("items")
+                if not isinstance(items, list):
+                    items = []
+                    grp["items"] = items
+                items.extend(rows)
+                return
+        groups.append({"title": title, "items": rows})
+
+    _add("Not opened", unread)
+    _add("Needs a reply", reply)
     sec["groups"] = groups
-    sec["items"] = []
     sec.pop("empty", None)
 
 

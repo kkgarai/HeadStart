@@ -635,15 +635,7 @@ function resetModelSelect(label) {
 function usablePlannerModel(id) {
   const low = String(id || "").toLowerCase();
   if (!low) return false;
-  if (
-    /(bedrock|vertex|embedding|whisper|tts|dall-e|dalle|imagen|moderation|transcri|codec|auto-router|auto-model|-1m\b|codex)/.test(
-      low
-    )
-  ) {
-    return false;
-  }
-  if (low.startsWith("us.") || low.startsWith("global.") || low.startsWith("anthropic.")) return false;
-  if (low.indexOf("anthropic.claude") >= 0) return false;
+  if (/(embedding|whisper|tts|dall-e|dalle|imagen|moderation|transcri|codec)/.test(low)) return false;
   return true;
 }
 
