@@ -6005,6 +6005,27 @@ def _peek_is_raw(text: str) -> bool:
     return False
 
 
+def _norm_peek_line(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _summary_is_transcript(summary: str, messages: list) -> bool:
+    """A pasted Slack message is not the summary."""
+    text = _norm_peek_line(summary)
+    if not text or _peek_is_raw(text):
+        return True
+    bodies = [
+        _norm_peek_line(row.get("text"))
+        for row in (messages or [])
+        if isinstance(row, dict)
+    ]
+    bodies = [body for body in bodies if body]
+    if text in bodies:
+        return True
+    hits = sum(1 for body in bodies if len(body) > 40 and body in text)
+    return hits >= 2
+
+
 def _model_peek_summary(it: dict) -> str:
     peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
     summary = str(peek.get("summary") or it.get("summary") or "").strip()
@@ -6175,8 +6196,10 @@ def _finish_slack_card(it: dict, data: dict) -> None:
     it["kind"] = "slack"
     _enrich_slack_card(it, data)
     sanit.relabel_slack_dms({"sections": [{"title": "Slack", "items": [it]}], "name": data.get("name"), "manager": data.get("manager")})
-    if sanit.slack_copy_is_placeholder(it.get("detail")):
-        it["detail"] = ""
+    written = _model_peek_summary(it)
+    one_line = str(it.get("detail") or "").strip()
+    if sanit.slack_copy_is_placeholder(one_line) or _peek_is_raw(one_line):
+        one_line = ""
     threads = _load_slack_threads()
     ident = str(it.get("id") or "")
     cid = str(it.get("channelId") or "")
@@ -6187,9 +6210,17 @@ def _finish_slack_card(it: dict, data: dict) -> None:
     if sanit.slack_copy_is_placeholder(snippet):
         snippet = ""
         it["snippet"] = ""
+    if _summary_is_transcript(written, messages):
+        written = ""
+    if _summary_is_transcript(one_line, messages):
+        one_line = ""
+    if not one_line and written:
+        one_line = written
+    if not written and one_line:
+        written = one_line
     if messages:
         it["peek"] = {
-            "summary": str(messages[0].get("text") or ""),
+            "summary": written,
             "chronology": [
                 {
                     "when": row.get("when") or "",
@@ -6201,13 +6232,19 @@ def _finish_slack_card(it: dict, data: dict) -> None:
                 if isinstance(row, dict) and str(row.get("text") or "").strip()
             ],
         }
-    elif snippet:
-        it["peek"] = {"summary": snippet[:500]}
+        it["detail"] = one_line
+        if written:
+            it["summary"] = written
+    elif written or snippet:
+        it["peek"] = {"summary": written or snippet[:500]}
+        it["detail"] = one_line or written
+        if written:
+            it["summary"] = written
     else:
         peek = it.get("peek") if isinstance(it.get("peek"), dict) else {}
         if sanit.slack_copy_is_placeholder(peek.get("summary")):
             it.pop("peek", None)
-    it["detail"] = ""
+        it["detail"] = one_line
 
 
 def _stamp_inbox_peeks(data: dict) -> None:

@@ -5146,7 +5146,19 @@
             return String((ev && ev.kind) || "").toLowerCase() === "slack" && peekClean((ev && ev.text) || "");
           });
           if (slackBits.length) {
-          var thread = '<p class="peek-h">Message</p><ol class="peek-chrono">';
+          var summaryText = peekClean((raw.peek && raw.peek.summary) || raw.summary || "");
+          var summaryIsMessage = slackBits.some(function (ev) {
+            return peekClean((ev && ev.text) || "") === summaryText;
+          });
+          var thread = "";
+          if (summaryText && !summaryIsMessage) {
+            thread += '<p class="peek-h">Summary</p><div class="peek-summary">';
+            peekSentences(summaryText).forEach(function (s) {
+              thread += "<p>" + esc(s) + "</p>";
+            });
+            thread += "</div>";
+          }
+          thread += '<p class="peek-h">Message</p><ol class="peek-chrono">';
           slackBits.forEach(function (ev) {
             var who = (ev && ev.who) || "";
             var at = (ev && ev.when) || "";
