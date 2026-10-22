@@ -6696,8 +6696,7 @@ def _inbox_payload_rows(payload: object) -> int:
 
 def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
     """Keep opened leftovers on the page when the model never classified them."""
-    slack_unread: list[dict] = []
-    slack_reply: list[dict] = []
+    slack_rows: list[dict] = []
     done_inbox = set()
     try:
         done_inbox = _sanitize_mod()._ledger_keys(load_done_ledger())
@@ -6726,12 +6725,8 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
         }
         if row.get("sev1Case"):
             item["sev1Case"] = row.get("sev1Case")
-        if row.get("unread") and row.get("lastHumanIsMe") is not False:
-            item["slackBucket"] = "unread"
-            slack_unread.append(item)
-        else:
-            item["slackBucket"] = "reply"
-            slack_reply.append(item)
+        item["slackBucket"] = "keep"
+        slack_rows.append(item)
     mail_unread: list[dict] = []
     for row in gather.get("mailCandidates") or []:
         if not _inbox_still_open(row, done_inbox):
@@ -6758,7 +6753,7 @@ def _inbox_groups_from_gather(gather: dict) -> tuple[dict, dict, bool]:
         return out
     had = bool(gather.get("slackCandidates") or gather.get("mailCandidates"))
     return (
-        {"groups": groups(slack_unread, slack_reply)},
+        {"items": slack_rows[:40], "groups": []},
         {"groups": groups(mail_unread)},
         had,
     )
@@ -6979,7 +6974,6 @@ Slack:
 - Drop "SLA REMINDER - Schedule started" rota pings.
 - Closing reactions (ack, white_check_mark, eyes as acknowledgment) close the loop. Drop that DM or thread.
 - Drop FYI, huddle over, and thanks that say they will update the customer.
-- Not opened = unread and still yours. Needs a reply = opened and the loop is still open.
 - Skip STORM and broadcast FYI. Do not skip the PSBot group conversation with the current manager.
 - DM label is "{peer} (DM)". Channel and thread label is #channel. Never this engineer's name. Do not put the message in the label or in detail. The message belongs in peek. One card per person. One card per channel. One card per thread.
 
@@ -6993,11 +6987,12 @@ Mail:
 - Drop "SLA ROTA" roster mail. That is not a case or an investigation.
 - Drop case-thread Chatter that only repeats the case.
 
-Write {"inboxReviewed": true, "slack": {"groups": [...]}, "mail": {"groups": [...]}}.
-Group titles are only "Not opened" or "Needs a reply".
-Each group is {"title": "...", "items": [...]}. The array key is items.
+Write {"inboxReviewed": true, "slack": {"items": [...]}, "mail": {"groups": [...]}}.
+Slack is one list. Do not split Slack into "Not opened" and "Needs a reply".
+Mail group titles are only "Not opened" or "Needs a reply".
+Each mail group is {"title": "...", "items": [...]}. The array key is items.
 Each kept row copies id, label, slackUrl or mailUrl, channelId, channel, ts, from, unread from the clip. For a channel or thread, label is #channel even when from is this engineer.
-slackBucket is "unread" or "reply". mailBucket is "unread" or "reply".
+mailBucket is "unread" or "reply". Do not set slackBucket.
 You write the Peek. Each kept row has detail (one sentence) and peek {"summary": "2-4 sentences"}. Say what the thread or mail is about and what is still open. Plain sentences. Do not paste the clip, JSON, "Message TS", user ids, or mail headers.
 Omit every dropped row. Empty groups are allowed only when every clip was a drop.
 Then stop.

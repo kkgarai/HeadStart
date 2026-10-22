@@ -3896,7 +3896,7 @@
           [/unblocked/, "Blocker cleared since last logout. Close the loop with the customer."],
           [/(still watching|^watch\b|no action needed)/, "Peek only. Not due a follow-up. Do not re-nudge."],
           [/needs a touch|follow-up due|follow up due/, "Quiet past hold. A public update is owed."],
-          [/^slack\b/, "Unread threads first. Opened threads that still need a reply sit under Needs a reply."],
+          [/^slack\b/, "Threads and DMs that still need you."],
           [/^(mail|email|gmail)\b/, "Asks in Gmail that still need a reply or a click. Not newsletters."],
           [/^gus\b/, "Support Contact, Follow, Due Date SLA, LAP, and OrgCS GUS related list. Initial Response pending is on the case row."],
           [/^(day plan|todays plan|rest of day|rest-of-day|calendar)/, "The clock for this shift ±2 hours. Login and Logout mark the shift. Leftover work is planned from now."],
@@ -4139,15 +4139,13 @@
         return "";
       }
       function hoistSlackRows() {
-        var unread = [];
-        var opened = [];
-        var leftover = [];
+        var rows = [];
         var slackSec = null;
         var rest = [];
         function peel(list, sec) {
           var stay = [];
           (list || []).forEach(function (it) {
-            if (isSlackRow(it, sec)) leftover.push(it);
+            if (isSlackRow(it, sec)) rows.push(it);
             else stay.push(it);
           });
           return stay;
@@ -4157,17 +4155,10 @@
           if (slackSectionTitle(sec.title)) {
             slackSec = sec;
             (sec.groups || []).forEach(function (g) {
-              var title = String((g && g.title) || "");
-              var items = ((g && (g.items && g.items.length ? g.items : g.rows)) || []).slice();
-              var kind = inboxGroupKind(title);
-              items.forEach(function (it) {
-                var itemKind = kind || slackItemKind(it);
-                if (itemKind === "unread") unread.push(it);
-                else if (itemKind === "opened") opened.push(it);
-                else leftover.push(it);
-              });
+              var items = ((g && (g.items && g.items.length ? g.items : g.rows)) || []);
+              items.forEach(function (it) { if (it) rows.push(it); });
             });
-            leftover = leftover.concat(sec.items || []);
+            (sec.items || []).forEach(function (it) { if (it) rows.push(it); });
             return;
           }
           sec.items = peel(sec.items, sec);
@@ -4176,21 +4167,13 @@
           });
           rest.push(sec);
         });
-        leftover.forEach(function (it) {
-          var kind = slackItemKind(it);
-          if (kind === "unread") unread.push(it);
-          else opened.push(it);
-        });
-        var groups = [];
-        if (unread.length) groups.push({ title: "Not opened", items: unread });
-        if (opened.length) groups.push({ title: "Needs a reply", items: opened });
         if (!slackSec) {
-          slackSec = { title: "Slack", asTask: true, empty: "Slack — clear", groups: groups };
+          slackSec = { title: "Slack", asTask: true, empty: "Slack — clear", items: rows, groups: [] };
         } else {
           slackSec.asTask = true;
-          slackSec.groups = groups;
-          slackSec.items = [];
-          if (!groups.length) slackSec.empty = slackSec.empty || "Slack — clear";
+          slackSec.groups = [];
+          slackSec.items = rows;
+          if (!rows.length) slackSec.empty = slackSec.empty || "Slack — clear";
         }
         var insertAt = 0;
         rest.forEach(function (sec, i) {

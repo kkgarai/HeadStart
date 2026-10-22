@@ -157,7 +157,7 @@ Shape only. Every id, caseNumber, label, and `todayPlan` row is copied from **th
 ```
 
 Fill the arrays with **this gather**. `[]` means none — Python will not show Quick wins / Customer asked / Before you log off unless the list has rows.
-Slack/Mail group titles are only `Not opened` or `Needs a reply`. Stamp `unread` + `slackBucket` (`unread` or `reply`) on every Slack row.
+Slack is one list. Mail group titles are only `Not opened` or `Needs a reply`. Stamp `mailBucket` (`unread` or `reply`) on every Mail row.
 `todayPlan` order is placement order. Do not put Google meetings in `todayPlan` — gather `meetings[]` already has them.
 
 Never print `/case-gho`, `/case-comment`, or `/briefing`. Never invent sample cases.
