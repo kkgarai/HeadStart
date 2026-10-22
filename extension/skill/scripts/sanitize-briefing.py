@@ -2043,7 +2043,13 @@ def normalize_chronology(data: dict) -> None:
                 })
             elif isinstance(ev, dict):
                 beat = dict(ev)
-                beat["text"] = _overview_beat(beat.get("text") or beat.get("body") or "")
+                raw_text = str(beat.get("text") or beat.get("body") or "")
+                kind = str(it.get("kind") or "").lower()
+                ident = str(it.get("id") or "")
+                if kind == "slack" or ident.startswith("slack-") or str(beat.get("kind") or "").lower() == "slack":
+                    beat["text"] = re.sub(r"\s+", " ", raw_text).strip()
+                else:
+                    beat["text"] = _overview_beat(raw_text)
                 if beat.get("text"):
                     out.append(beat)
         out.sort(key=lambda ev: _parse_update_ms(str(ev.get("_ts") or "")) or 0)

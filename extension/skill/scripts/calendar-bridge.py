@@ -308,6 +308,7 @@ PLANNER_DIGEST_FILE = pathlib.Path("/tmp/planner-digest.txt")
 PLANNER_GATHER_FILE = pathlib.Path("/tmp/planner-gather.json")
 PLANNER_INBOX_FILE = pathlib.Path("/tmp/planner-inbox.json")
 PLANNER_INBOX_TXT = pathlib.Path("/tmp/planner-inbox.txt")
+PLANNER_SLACK_THREADS = pathlib.Path("/tmp/planner-slack-threads.json")
 OWNED_CASES_FILE = pathlib.Path("/tmp/owned-cases.json")
 MAX_GATHER_CHARS = 12_000
 INBOX_CLIP_N = 4000
@@ -5179,6 +5180,7 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
             joined = "\n".join(clip_parts)
             with clip_lock:
                 clip_cache.setdefault(cache_key, joined)
+        item["_messages"] = _slack_peek_messages(joined)
         clip_txt = _inbox_plain(joined, 12000)
         if not clip_txt:
             return 0
@@ -5218,6 +5220,7 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
     if still:
         names = ", ".join(str(item.get("channel") or item.get("id") or "") for item in still[:8])
         append_plan_step(kind="log", label=f"Slack thread open failed · {len(still)} · {names}")
+    _save_slack_threads(found)
     return opened
 
 
@@ -5923,10 +5926,37 @@ def _slack_peek_messages(text: str) -> list[dict]:
         msg = re.sub(r"\s*Reactions:.*$", "", msg).strip()
         if not msg or who.lower() == "slackbot":
             continue
-        found.append({"who": who, "when": when, "kind": "slack", "text": msg[:500]})
-        if len(found) >= 40:
-            break
+        found.append({"who": who, "when": when, "kind": "slack", "text": msg})
     return found
+
+
+def _save_slack_threads(found: list) -> None:
+    """Full Slack text for the page. The model file stays the short clip."""
+    blob: dict[str, list] = {}
+    for item in found or []:
+        if not isinstance(item, dict):
+            continue
+        msgs = item.pop("_messages", None)
+        if not isinstance(msgs, list) or not msgs:
+            continue
+        ident = str(item.get("id") or "").strip()
+        cid = str(item.get("channelId") or "").strip()
+        if ident:
+            blob[ident] = msgs
+        if cid:
+            blob[cid] = msgs
+    try:
+        PLANNER_SLACK_THREADS.write_text(json.dumps(blob, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_slack_threads() -> dict:
+    try:
+        loaded = json.loads(PLANNER_SLACK_THREADS.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _mail_peek_body(text: str) -> str:
@@ -6145,17 +6175,28 @@ def _finish_slack_card(it: dict, data: dict) -> None:
     sanit.relabel_slack_dms({"sections": [{"title": "Slack", "items": [it]}], "name": data.get("name"), "manager": data.get("manager")})
     if sanit.slack_copy_is_placeholder(it.get("detail")):
         it["detail"] = ""
-    messages = _slack_peek_messages(str(it.get("openedClip") or ""))
+    threads = _load_slack_threads()
+    ident = str(it.get("id") or "")
+    cid = str(it.get("channelId") or "")
+    messages = threads.get(ident) or threads.get(cid) or []
+    if not isinstance(messages, list) or not messages:
+        messages = _slack_peek_messages(str(it.get("openedClip") or ""))
     snippet = str(it.get("snippet") or "").strip()
     if sanit.slack_copy_is_placeholder(snippet):
         snippet = ""
         it["snippet"] = ""
     if messages:
         it["peek"] = {
-            "summary": messages[0]["text"][:500],
+            "summary": str(messages[0].get("text") or ""),
             "chronology": [
-                {"when": row["when"], "who": row["who"], "kind": "slack", "text": row["text"][:500]}
+                {
+                    "when": row.get("when") or "",
+                    "who": row.get("who") or "",
+                    "kind": "slack",
+                    "text": str(row.get("text") or ""),
+                }
                 for row in messages
+                if isinstance(row, dict) and str(row.get("text") or "").strip()
             ],
         }
     elif snippet:
