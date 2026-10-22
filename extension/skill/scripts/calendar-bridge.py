@@ -5121,6 +5121,8 @@ def write_planner_inbox_txt(slack: list, mail: list) -> None:
 
 def clip_leftover_slack(found: list, data: dict | None = None) -> int:
     """Open every leftover DM and mention thread. Planner still keep/drops from the clips."""
+    cutoff = inbox_cutoff(str((data or {}).get("timezone") or ""))
+    oldest = f"{cutoff.timestamp():.6f}"
     jobs: list[tuple[dict, str, dict]] = []
     for item in found or []:
         if not isinstance(item, dict):
@@ -5129,11 +5131,11 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
         ts = str(item.get("threadTs") or item.get("ts") or "")
         if item.get("sev1Channel") and cid[:1] in "CG":
             jobs.append(
-                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100})
+                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100, "oldest": oldest})
             )
         elif cid.startswith("D"):
             jobs.append(
-                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100})
+                (item, "slack_read_channel", {"channel_id": cid, "response_format": "detailed", "limit": 100, "oldest": oldest})
             )
         elif cid[:1] in "CG" and ts:
             jobs.append(
@@ -5145,6 +5147,7 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
                         "message_ts": ts,
                         "response_format": "detailed",
                         "limit": 80,
+                        "oldest": oldest,
                     },
                 )
             )
@@ -5174,13 +5177,17 @@ def clip_leftover_slack(found: list, data: dict | None = None) -> int:
                 raw = str(text or "").strip()
                 if raw:
                     clip_parts.append(raw)
+                if raw and any(not _slack_in_lookback(row, cutoff) for row in _slack_peek_messages(raw)):
+                    break
                 cursor = _slack_next_cursor(text)
                 if not cursor:
                     break
             joined = "\n".join(clip_parts)
             with clip_lock:
                 clip_cache.setdefault(cache_key, joined)
-        item["_messages"] = _slack_peek_messages(joined)
+        item["_messages"] = [
+            row for row in _slack_peek_messages(joined) if _slack_in_lookback(row, cutoff)
+        ]
         clip_txt = _inbox_plain(joined, 12000)
         if not clip_txt:
             return 0
@@ -5913,22 +5920,44 @@ def _unwrap_clip(text: str) -> str:
     return raw.replace("\\n", "\n").replace("\\t", " ")
 
 
+def _slack_in_lookback(row: dict, cutoff: datetime) -> bool:
+    """Inbox window only. A DM read must not keep a message from a prior year."""
+    ts = str((row or {}).get("ts") or "").strip()
+    if ts:
+        try:
+            return float(ts) >= cutoff.timestamp() - 1
+        except ValueError:
+            pass
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", str((row or {}).get("when") or ""))
+    if not match:
+        return True
+    try:
+        msg_day = datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))).date()
+    except ValueError:
+        return True
+    return msg_day >= cutoff.date()
+
+
 def _slack_peek_messages(text: str) -> list[dict]:
     body = _unwrap_clip(text)
     found: list[dict] = []
     pattern = re.compile(
         r"===\s*Message from\s+(.+?)\s+\([A-Z0-9]+\)\s+at\s+(.+?)\s*===\s*"
-        r"(?:\nMessage TS:[^\n]*)?\n(.*?)(?=\n===\s*Message from|\Z)",
+        r"(?:\nMessage TS:\s*([0-9.]+))?\n(.*?)(?=\n===\s*Message from|\Z)",
         re.S,
     )
     for match in pattern.finditer(body):
         who = re.sub(r"\s+", " ", match.group(1)).strip()
         when = re.sub(r"\s+", " ", match.group(2)).strip()
-        msg = re.sub(r"\s+", " ", match.group(3)).strip()
+        ts = (match.group(3) or "").strip()
+        msg = re.sub(r"\s+", " ", match.group(4)).strip()
         msg = re.sub(r"\s*Reactions:.*$", "", msg).strip()
         if not msg or who.lower() == "slackbot":
             continue
-        found.append({"who": who, "when": when, "kind": "slack", "text": msg})
+        row = {"who": who, "when": when, "kind": "slack", "text": msg}
+        if ts:
+            row["ts"] = ts
+        found.append(row)
     return found
 
 
@@ -6206,6 +6235,8 @@ def _finish_slack_card(it: dict, data: dict) -> None:
     messages = threads.get(ident) or threads.get(cid) or []
     if not isinstance(messages, list) or not messages:
         messages = _slack_peek_messages(str(it.get("openedClip") or ""))
+    cutoff = inbox_cutoff(str(data.get("timezone") or ""))
+    messages = [row for row in messages if isinstance(row, dict) and _slack_in_lookback(row, cutoff)]
     snippet = str(it.get("snippet") or "").strip()
     if sanit.slack_copy_is_placeholder(snippet):
         snippet = ""
