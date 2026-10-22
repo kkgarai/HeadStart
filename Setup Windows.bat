@@ -13,7 +13,7 @@ if errorlevel 1 (
 )
 set "dest=%USERPROFILE%\HeadStart"
 if not exist "%dest%\.git" (
-  git clone --branch dev --single-branch https://github.com/kkgarai/HeadStart.git "%dest%"
+  git clone --branch main --single-branch https://github.com/kkgarai/HeadStart.git "%dest%"
   if errorlevel 1 (
     set "status=1"
     goto finish

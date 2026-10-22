@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """HeadStart setup demo.
 
-Detects this computer, asks which installed browser to use, clones the dev
+Detects this computer, asks which installed browser to use, clones the main
 branch when this file is not already inside a checkout, registers the native
 host, and opens that browser's extensions page.
 
@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 REPO = "https://github.com/kkgarai/HeadStart.git"
-BRANCH = "dev"
+BRANCH = "main"
 
 
 def home() -> Path:

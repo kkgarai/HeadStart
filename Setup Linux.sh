@@ -13,7 +13,7 @@ else
   else
     dest="$HOME/HeadStart"
     if [ ! -d "$dest/.git" ]; then
-      git clone --branch dev --single-branch https://github.com/kkgarai/HeadStart.git "$dest" || status=$?
+      git clone --branch main --single-branch https://github.com/kkgarai/HeadStart.git "$dest" || status=$?
     fi
     if [ -z "${status:-}" ]; then
       python3 "$dest/setup-headstart.py"
